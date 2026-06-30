@@ -54,11 +54,16 @@ async function loadLibrary() {
     card.className = "book-card";
     const mins = Math.round((b.duration || 0) / 60);
     const generating = b.status === "generating";
+    const ready = (b.status || "ready") === "ready";
     const badge = generating
       ? `<div class="badge"><span class="spinner"></span>${b.chapters_ready || 0}/${b.n_chapters}</div>`
       : "";
+    const pkg = ready
+      ? `<a class="pkg" href="/api/books/${b.id}/package" download title="Download .abk package for the phone app">⤓</a>`
+      : "";
     card.innerHTML = `
       <button class="del" title="Delete">🗑</button>
+      ${pkg}
       ${badge}
       <div class="cover">📖</div>
       <h3>${escapeHtml(b.title || b.id)}</h3>
@@ -66,6 +71,8 @@ async function loadLibrary() {
       <div class="stats"><span>${b.n_chapters} chapters</span><span>${mins} min</span>
         <span>${escapeHtml(b.voice || "")}</span></div>`;
     card.addEventListener("click", () => openBook(b.id));
+    const pkgEl = card.querySelector(".pkg");
+    if (pkgEl) pkgEl.addEventListener("click", (e) => e.stopPropagation());  // download, don't open
     card.querySelector(".del").addEventListener("click", async (e) => {
       e.stopPropagation();
       if (confirm(`Delete "${b.title}" and its audio?`)) {

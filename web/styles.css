@@ -79,6 +79,12 @@ button { font-family: inherit; cursor: pointer; }
   border: none; color: #ff9b9b;
 }
 .book-card:hover .del { opacity: 1; }
+.book-card .pkg {
+  position: absolute; top: 10px; right: 44px; opacity: 0;
+  background: rgba(0,0,0,.4); border-radius: 6px; padding: 2px 7px; font-size: 13px;
+  border: none; color: #9bd0ff; text-decoration: none; line-height: 1.4;
+}
+.book-card:hover .pkg { opacity: 1; }
 .book-card .badge {
   position: absolute; top: 10px; left: 10px; z-index: 1;
   background: #38501f; color: #c6e8a0; border-radius: 20px;

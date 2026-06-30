@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 from . import config, library
 from .extract import SUPPORTED_EXTS
@@ -76,6 +77,36 @@ def api_delete(book_id: str):
         raise HTTPException(404, "Book not found")
     shutil.rmtree(book_dir)
     return {"ok": True}
+
+
+@app.get("/api/books/{book_id}/package")
+def api_package(book_id: str):
+    """Bundle a ready book into a .abk (zip) and stream it to the phone app.
+
+    Built into a temp dir and cleaned up after the response (FileResponse supports Range,
+    so large downloads are resumable)."""
+    import shutil
+    import tempfile
+    from . import export
+
+    if not (config.BOOKS_DIR / book_id).exists():
+        raise HTTPException(404, "Book not found")
+    tmpdir = Path(tempfile.mkdtemp(prefix="abk_"))
+    try:
+        path = export.package_book(book_id, out_dir=tmpdir)
+    except ValueError as e:           # not "ready" yet
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise HTTPException(409, str(e))
+    except FileNotFoundError as e:    # missing book or audio file
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise HTTPException(500, f"Packaging failed: {e}")
+    return FileResponse(
+        path, media_type="application/zip", filename=f"{book_id}.abk",
+        background=BackgroundTask(shutil.rmtree, tmpdir, True),  # (path, ignore_errors)
+    )
 
 
 def _run_job(job_id: str, pdf_path: Path, opts: dict, resume: bool, control: JobControl):

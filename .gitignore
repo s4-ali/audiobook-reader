@@ -7,3 +7,4 @@ library/books/*
 !library/inbox/.gitkeep
 !library/books/.gitkeep
 scratchpad/
+*.abk

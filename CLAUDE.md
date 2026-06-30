@@ -22,6 +22,7 @@ brew install ffmpeg espeak-ng     # ffmpeg = MP3 output; espeak-ng = pronunciati
 ./scripts/ingest.sh <file.pdf|epub> [--voice af_heart --speed 1.0 --resume]
 ./scripts/ingest.sh               # ingest every PDF/EPUB in library/inbox/
 ./scripts/ingest.sh x.pdf --engine dummy   # fast pipeline test, no model download
+./scripts/export.sh <book-id>              # package a ready book → <book-id>.abk (mobile app)
 .venv/bin/python scripts/make_sample_pdf.py     # writes library/inbox/sample-book.pdf
 .venv/bin/python scripts/make_sample_epub.py    # writes library/inbox/sample-book.epub
 ```
@@ -96,6 +97,23 @@ sentence start times. Search and resume are client-side (search indexes manifest
 position saved to `localStorage`). During generation it polls `genstate`; the generation
 banner doubles as the pause/resume/cancel control surface.
 
+### `.abk` packaging + mobile app (`app/export.py`, `mobile/`)
+`export.package_book(book_id)` zips a **ready** book's `manifest.json` + chapter MP3s
+(`ZIP_STORED` — MP3 is already compressed) into `<book-id>.abk`, with all members at the
+archive root keeping their bare names so the manifest's `audio` references resolve
+unchanged. Exposed as a CLI (`app/export.py` / `scripts/export.sh`) and as
+`GET /api/books/{id}/package` (builds into a tempdir, streams via `FileResponse`, cleans up
+with a `BackgroundTask`; 409 if the book isn't `ready`). The Flutter app under `mobile/`
+(Android) consumes it: it downloads `.abk` over the LAN (reusing `/api/library`) or imports
+a file, extracts to `<app docs>/books/<id>/` — the **same flat layout** the desktop serves —
+and plays offline. It's a deliberate re-implementation of `web/app.js` minus generation:
+`just_audio` + `just_audio_background` for playback and lock-screen controls, a `just_audio`
+playlist (`setAudioSources`) of the chapter MP3s, and the **same binary-search-on-
+sentence-start-times** sync — `findActiveSentence` in `mobile/lib/models/manifest.dart`
+ports the web `findActiveIndex`. The manifest stays the single contract:
+`mobile/lib/models/manifest.dart` mirrors it field-for-field (terse sentence keys included)
+and replicates the "missing chapter status = ready" leniency via `Chapter.isReady`.
+
 ## Conventions & gotchas
 
 - **CPU is the default TTS device** (`KOKORO_DEVICE`, see `app/config.py`); MPS is slower for
@@ -109,3 +127,10 @@ banner doubles as the pause/resume/cancel control surface.
   `#player`, …) set an explicit `display` that would otherwise beat the `hidden` attribute.
 - MP3 encoding adds a fixed ~50 ms leading delay vs. the raw-PCM-derived timings — a constant
   offset, negligible for sentence-level highlighting; don't try to "fix" it per chapter.
+- **Mobile (`mobile/`) Android gotchas**: `MainActivity` must extend `AudioServiceActivity`
+  (just_audio_background needs it for the shared FlutterEngine), `minSdk >= 23`, and cleartext
+  HTTP must be enabled (LAN server is `http://`). The phone reaches the desktop over Wi-Fi, so
+  serve with `HOST=0.0.0.0`; from an Android emulator the host is `10.0.2.2`. Only
+  `status == "ready"` books are packageable. The on-device integration test
+  (`mobile/integration_test/app_test.dart`) needs a running server (override its URL with
+  `--dart-define=SERVER_URL=...`).

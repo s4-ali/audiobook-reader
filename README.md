@@ -27,6 +27,8 @@ Everything runs **on your machine** — no cloud, no accounts.
 - **Search** the whole book (text + chapter/topic titles); click a result to jump.
 - **Resume** where you left off (per book), saved in your browser.
 - **Add books from the browser** (upload a PDF → watch the progress bar) or via CLI.
+- **Take it on your phone** — package a finished book and play it **offline** in the
+  companion Flutter app (Android), with the same navigation, search and synced highlighting.
 - **Keyboard shortcuts** for everything.
 
 ## Requirements
@@ -95,6 +97,31 @@ finished chapters intact), then continue later with `--resume`.
 
 Generated audiobooks live in `library/books/<book-id>/` (one MP3 per chapter +
 `manifest.json`). They appear automatically in the web library.
+
+## Listen on your phone
+
+Finished books can be played **offline** in the companion **Flutter app**
+(`mobile/`, Android). A book is bundled as a single **`.abk`** file — a ZIP of
+`manifest.json` + the chapter MP3s — and gets onto the phone two ways:
+
+- **Download over Wi-Fi** — start the server so your phone can reach it
+  (`HOST=0.0.0.0 ./scripts/run.sh`), open the app, tap **Connect**, enter your
+  computer's address (e.g. `192.168.1.20:8000`), and download any *ready* book.
+- **Import a file** — build the package on your computer and move it to the phone
+  (AirDrop / Files / USB / cloud), then **Import** it in the app:
+
+  ```bash
+  ./scripts/export.sh <book-id>       # writes <book-id>.abk to the current dir
+  ./scripts/export.sh                  # packages every "ready" book
+  ```
+
+  (Or use the **⤓** button on a book card in the web library — it hits the same
+  `GET /api/books/<id>/package` endpoint.)
+
+The app stores books on the device and plays them fully offline, with the same
+chapter/topic navigation, full-text search, synced sentence highlighting, resume,
+speed/volume, and background playback with lock-screen controls. See
+[`mobile/README.md`](mobile/README.md) to build and run it.
 
 ## How it works
 
@@ -181,9 +208,11 @@ app/            FastAPI backend + ingest pipeline
   tts/             kokoro_engine.py, dummy_engine.py
   audio.py         concatenation + MP3 encoding
   ingest.py        orchestration + CLI
+  export.py        package a ready book into a .abk + CLI
   server.py        API + static serving
 web/            no-build vanilla JS player (index.html, app.js, styles.css)
+mobile/         Flutter app (Android) — plays packaged .abk books offline
 library/inbox/  drop PDFs here
 library/books/  generated audiobooks
-scripts/        setup.sh, run.sh, ingest.sh
+scripts/        setup.sh, run.sh, ingest.sh, export.sh
 ```
