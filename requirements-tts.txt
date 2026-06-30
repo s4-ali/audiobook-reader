@@ -1,0 +1,5 @@
+# Real Kokoro-82M narration. Heavier (pulls in PyTorch + the model on first run).
+-r requirements.txt
+torch>=2.5
+kokoro>=0.8.2
+misaki[en]>=0.8.2

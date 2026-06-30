@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+library/inbox/*
+library/books/*
+!library/inbox/.gitkeep
+!library/books/.gitkeep
+scratchpad/
