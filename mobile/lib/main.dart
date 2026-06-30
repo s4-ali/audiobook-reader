@@ -6,6 +6,7 @@ import 'screens/library_screen.dart';
 import 'services/library_store.dart';
 import 'services/settings_store.dart';
 import 'services/transfer.dart';
+import 'theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -35,27 +36,8 @@ class AudiobookApp extends StatelessWidget {
       child: MaterialApp(
         title: 'Audiobook Player',
         debugShowCheckedModeBanner: false,
-        theme: _theme(),
+        theme: buildTheme(),
         home: const LibraryScreen(),
-      ),
-    );
-  }
-
-  ThemeData _theme() {
-    const accent = Color(0xFF5b9bd5);
-    const bg = Color(0xFF12161c);
-    final scheme = ColorScheme.fromSeed(
-      seedColor: accent,
-      brightness: Brightness.dark,
-    ).copyWith(surface: const Color(0xFF1a212b));
-    return ThemeData(
-      useMaterial3: true,
-      brightness: Brightness.dark,
-      colorScheme: scheme,
-      scaffoldBackgroundColor: bg,
-      sliderTheme: const SliderThemeData(
-        trackHeight: 3,
-        overlayShape: RoundSliderOverlayShape(overlayRadius: 14),
       ),
     );
   }

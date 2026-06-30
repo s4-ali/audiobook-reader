@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../services/library_store.dart';
 import '../services/settings_store.dart';
 import '../services/transfer.dart';
+import '../theme.dart';
 import '../util.dart';
 
 /// Connect to the desktop server over the LAN, list its library, and download books
@@ -144,8 +145,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
           if (_error != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Text(_error!,
-                  style: const TextStyle(color: Colors.orangeAccent)),
+              child: Text(_error!, style: const TextStyle(color: cRed)),
             ),
           Expanded(child: _list()),
         ],
@@ -207,7 +207,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
     }
     if (_installed.contains(b.id)) {
       return IconButton(
-        icon: const Icon(Icons.check_circle, color: Colors.greenAccent),
+        icon: const Icon(Icons.check_circle, color: cGreen),
         tooltip: 'Downloaded — tap to re-download',
         onPressed: b.isReady ? () => _download(b) : null,
       );

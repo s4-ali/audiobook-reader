@@ -7,6 +7,7 @@ import '../models/manifest.dart';
 import '../services/library_store.dart';
 import '../services/player_controller.dart';
 import '../services/settings_store.dart';
+import '../theme.dart';
 import '../util.dart';
 
 /// The player: scrolling chapter text with the active sentence highlighted (karaoke),
@@ -22,7 +23,7 @@ class ReaderScreen extends StatefulWidget {
 
 class _ReaderScreenState extends State<ReaderScreen> {
   static const _speeds = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
-  static const _tiny = TextStyle(fontSize: 11, color: Colors.white38);
+  static const _tiny = TextStyle(fontSize: 11, color: cSubtext0);
 
   late final PlayerController _c;
   final ItemScrollController _scroll = ItemScrollController();
@@ -146,7 +147,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 child: Text(ch.title,
                     style: const TextStyle(
                         fontSize: 13,
-                        color: Colors.white54,
+                        color: cSubtext0,
                         fontWeight: FontWeight.w600)),
               ),
               Expanded(child: _textList()),
@@ -174,8 +175,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
             text: '${s.t} ',
             recognizer: _recognizers[s.i],
             style: TextStyle(
-              color: active ? Colors.white : Colors.white70,
-              backgroundColor: active ? const Color(0xFF2d4263) : null,
+              color: active ? cCrust : cText,
+              backgroundColor: active ? cMauve : null,
             ),
           ));
         }
@@ -199,10 +200,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     return SafeArea(
       top: false,
       child: Container(
-        decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
-          border: const Border(top: BorderSide(color: Colors.white12)),
-        ),
+        color: cSurface0,
         padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -215,7 +213,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white60, fontSize: 12),
+                  style: const TextStyle(color: cSubtext0, fontSize: 12),
                 ),
               ),
             ),
@@ -250,6 +248,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     onPressed: () => _c.nudge(-10)),
                 IconButton(
                   iconSize: 52,
+                  color: cMauve,
                   icon: Icon(_c.playing
                       ? Icons.pause_circle_filled
                       : Icons.play_circle_filled),
@@ -267,11 +266,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
             Row(
               children: [
                 const SizedBox(width: 8),
-                const Icon(Icons.speed, size: 18, color: Colors.white54),
+                const Icon(Icons.speed, size: 18, color: cSubtext0),
                 const SizedBox(width: 4),
                 _speedDropdown(),
                 const Spacer(),
-                const Icon(Icons.volume_up, size: 18, color: Colors.white54),
+                const Icon(Icons.volume_up, size: 18, color: cSubtext0),
                 SizedBox(
                   width: 130,
                   child: Slider(value: _c.volume, onChanged: _c.setVolume),
@@ -407,7 +406,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                                fontSize: 12, color: Colors.white54),
+                                fontSize: 12, color: cSubtext0),
                           ),
                           subtitle: Text(h.text,
                               maxLines: 2, overflow: TextOverflow.ellipsis),

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../services/library_store.dart';
 import '../services/transfer.dart';
+import '../theme.dart';
 import '../util.dart';
 import 'browse_screen.dart';
 import 'reader_screen.dart';
@@ -178,12 +179,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
     return InkWell(
       onTap: () => _open(b),
       onLongPress: () => _delete(b),
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(12),
       child: Container(
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.surface,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.white12),
+          color: cSurface0,
+          borderRadius: BorderRadius.circular(12),
         ),
         padding: const EdgeInsets.all(14),
         child: Column(
@@ -193,14 +193,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
               child: Container(
                 width: double.infinity,
                 decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(10),
-                  gradient: const LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [Color(0xFF243b55), Color(0xFF141e30)],
-                  ),
+                  borderRadius: BorderRadius.circular(8),
+                  color: cMantle,
                 ),
-                child: const Center(child: Icon(Icons.menu_book, size: 38)),
+                child: const Center(
+                    child: Icon(Icons.menu_book, size: 38, color: cSubtext0)),
               ),
             ),
             const SizedBox(height: 10),
@@ -211,10 +208,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
             Text(book.author.isEmpty ? 'Unknown' : book.author,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                style: const TextStyle(color: cSubtext0, fontSize: 12)),
             const SizedBox(height: 4),
             Text('${book.chaptersTotal} ch · ${fmtMinutes(book.totalDuration)}',
-                style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                style: const TextStyle(color: cSubtext0, fontSize: 11)),
           ],
         ),
       ),
