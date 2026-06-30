@@ -126,6 +126,38 @@ button { font-family: inherit; cursor: pointer; }
 .empty { color: var(--muted); margin-top: 40px; text-align: center; line-height: 1.7; }
 code { background: var(--surface1); padding: 1px 6px; border-radius: var(--r-sm); }
 
+/* "Continue listening" hero */
+.continue-section { margin-bottom: 24px; }
+.continue-card {
+  display: flex; align-items: center; gap: 16px;
+  background: var(--surface0); border-radius: var(--r-md);
+  padding: 16px 18px; cursor: pointer; transition: transform .12s;
+  border-left: 3px solid var(--accent);
+}
+.continue-card:hover { transform: translateY(-2px); }
+.continue-card .cc-cover {
+  width: 60px; height: 60px; flex: 0 0 auto; border-radius: var(--r-md);
+  background: var(--mantle); display: flex; align-items: center; justify-content: center; font-size: 30px;
+}
+.continue-card .cc-body { flex: 1; min-width: 0; }
+.continue-card .cc-label {
+  color: var(--accent); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .5px; font-weight: 600; margin-bottom: 3px;
+}
+.continue-card h3 { margin: 0 0 3px; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.continue-card .cc-sub { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.continue-card .cc-bar { height: 5px; background: var(--base); border-radius: var(--r-full); overflow: hidden; }
+.continue-card .cc-fill { height: 100%; background: var(--accent); border-radius: var(--r-full); }
+.continue-card .cc-resume { flex: 0 0 auto; }
+
+/* Per-card resume progress */
+.book-card .card-progress {
+  margin-top: 12px; height: 4px; background: var(--base);
+  border-radius: var(--r-full); overflow: hidden;
+}
+.book-card .card-progress-fill { height: 100%; background: var(--accent); border-radius: var(--r-full); }
+.book-card .card-progress.done .card-progress-fill { background: var(--green); }
+
 /* Reader layout */
 #readerView { display: flex; }
 #sidebar {

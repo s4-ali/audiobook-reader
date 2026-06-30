@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../services/library_store.dart';
+import '../services/settings_store.dart';
 import '../services/transfer.dart';
 import '../theme.dart';
 import '../util.dart';
@@ -21,19 +22,49 @@ class LibraryScreen extends StatefulWidget {
 class _LibraryScreenState extends State<LibraryScreen> {
   late final LibraryStore _lib;
   late final Transfer _transfer;
+  late final SettingsStore _settings;
   List<InstalledBook>? _books;
+  Map<String, SavedPosition> _pos = {}; // book id -> resume point (for cards + "Continue")
 
   @override
   void initState() {
     super.initState();
     _lib = context.read<LibraryStore>();
     _transfer = context.read<Transfer>();
+    _settings = context.read<SettingsStore>();
     _load();
   }
 
   Future<void> _load() async {
     final books = await _lib.list();
-    if (mounted) setState(() => _books = books);
+    final pos = <String, SavedPosition>{};
+    for (final b in books) {
+      final p = _settings.loadPosition(b.book.id);
+      if (p != null) pos[b.book.id] = p;
+    }
+    if (mounted) {
+      setState(() {
+        _books = books;
+        _pos = pos;
+      });
+    }
+  }
+
+  /// The most recently played, not-yet-finished book — surfaced as the "Continue" card.
+  InstalledBook? _continueBook() {
+    final books = _books;
+    if (books == null) return null;
+    InstalledBook? best;
+    SavedPosition? bestPos;
+    for (final b in books) {
+      final p = _pos[b.book.id];
+      if (p == null || p.finished) continue;
+      if (bestPos == null || p.updated > bestPos.updated) {
+        best = b;
+        bestPos = p;
+      }
+    }
+    return best;
   }
 
   Future<void> _connect() async {
@@ -42,9 +73,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
     await _load();
   }
 
-  Future<void> _open(InstalledBook b) async {
-    await Navigator.of(context).push(
-        MaterialPageRoute<void>(builder: (_) => ReaderScreen(installed: b)));
+  Future<void> _open(InstalledBook b, {bool autoplay = false}) async {
+    await Navigator.of(context).push(MaterialPageRoute<void>(
+        builder: (_) => ReaderScreen(installed: b, autoplay: autoplay)));
     await _load();
   }
 
@@ -105,6 +136,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   @override
   Widget build(BuildContext context) {
     final books = _books;
+    final cont = _continueBook();
     return Scaffold(
       appBar: AppBar(
         title: const Text('Audiobooks'),
@@ -123,21 +155,102 @@ class _LibraryScreenState extends State<LibraryScreen> {
           ? const Center(child: CircularProgressIndicator())
           : books.isEmpty
               ? _empty()
-              : RefreshIndicator(
-                  onRefresh: _load,
-                  child: GridView.builder(
-                    padding: const EdgeInsets.all(14),
-                    gridDelegate:
-                        const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 220,
-                      childAspectRatio: 0.70,
-                      crossAxisSpacing: 14,
-                      mainAxisSpacing: 14,
+              : Column(
+                  children: [
+                    if (cont != null) _continueCard(cont),
+                    Expanded(
+                      child: RefreshIndicator(
+                        onRefresh: _load,
+                        child: GridView.builder(
+                          padding: const EdgeInsets.all(14),
+                          gridDelegate:
+                              const SliverGridDelegateWithMaxCrossAxisExtent(
+                            maxCrossAxisExtent: 220,
+                            childAspectRatio: 0.70,
+                            crossAxisSpacing: 14,
+                            mainAxisSpacing: 14,
+                          ),
+                          itemCount: books.length,
+                          itemBuilder: (_, i) => _card(books[i]),
+                        ),
+                      ),
                     ),
-                    itemCount: books.length,
-                    itemBuilder: (_, i) => _card(books[i]),
-                  ),
+                  ],
                 ),
+    );
+  }
+
+  Widget _continueCard(InstalledBook b) {
+    final p = _pos[b.book.id]!;
+    final total = b.book.chapters.length;
+    final ci = total == 0 ? 0 : p.chapterIndex.clamp(0, total - 1);
+    final pct = (p.frac * 100).clamp(0, 100).round();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 0),
+      child: InkWell(
+        onTap: () => _open(b, autoplay: true),
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          decoration: const BoxDecoration(
+            color: cSurface0,
+            borderRadius: BorderRadius.all(Radius.circular(12)),
+            border: Border(left: BorderSide(color: cMauve, width: 3)),
+          ),
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  color: cMantle,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.menu_book, color: cSubtext0),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text('CONTINUE LISTENING',
+                        style: TextStyle(
+                            color: cMauve,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: .5)),
+                    const SizedBox(height: 3),
+                    Text(b.book.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 16)),
+                    const SizedBox(height: 2),
+                    Text('Chapter ${ci + 1} of ${b.book.chaptersTotal} · $pct%',
+                        style: const TextStyle(color: cSubtext0, fontSize: 12)),
+                    const SizedBox(height: 8),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: LinearProgressIndicator(
+                        value: p.frac.clamp(0.0, 1.0),
+                        minHeight: 5,
+                        backgroundColor: cBase,
+                        color: cMauve,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              FilledButton(
+                onPressed: () => _open(b, autoplay: true),
+                child: const Text('Resume'),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -176,6 +289,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   Widget _card(InstalledBook b) {
     final book = b.book;
+    final p = _pos[book.id];
     return InkWell(
       onTap: () => _open(b),
       onLongPress: () => _delete(b),
@@ -212,6 +326,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
             const SizedBox(height: 4),
             Text('${book.chaptersTotal} ch · ${fmtMinutes(book.totalDuration)}',
                 style: const TextStyle(color: cSubtext0, fontSize: 11)),
+            if (p != null && p.frac > 0) ...[
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: LinearProgressIndicator(
+                  value: p.frac.clamp(0.0, 1.0),
+                  minHeight: 4,
+                  backgroundColor: cBase,
+                  color: p.finished ? cGreen : cMauve,
+                ),
+              ),
+            ],
           ],
         ),
       ),

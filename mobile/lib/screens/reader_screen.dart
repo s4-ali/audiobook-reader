@@ -15,7 +15,8 @@ import '../util.dart';
 /// web player; generation controls are intentionally absent (packages are already done).
 class ReaderScreen extends StatefulWidget {
   final InstalledBook installed;
-  const ReaderScreen({super.key, required this.installed});
+  final bool autoplay; // start playing once resumed (from the "Continue" card)
+  const ReaderScreen({super.key, required this.installed, this.autoplay = false});
 
   @override
   State<ReaderScreen> createState() => _ReaderScreenState();
@@ -41,7 +42,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void initState() {
     super.initState();
     _c = PlayerController(widget.installed, context.read<SettingsStore>());
-    _c.init();
+    _c.init().then((_) {
+      if (mounted && widget.autoplay) _c.play();
+    });
   }
 
   @override

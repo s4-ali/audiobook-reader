@@ -149,7 +149,29 @@ class PlayerController extends ChangeNotifier {
   }
 
   void _persist() => settings.savePosition(
-      book.id, _currentChapter, _position.inMilliseconds / 1000.0);
+      book.id, _currentChapter, _position.inMilliseconds / 1000.0,
+      frac: _progressFraction());
+
+  /// Overall progress across the whole book (0..1): the current chapter's global start plus
+  /// the in-chapter position, over the book's total duration. Powers the library progress
+  /// bars and the "Continue listening" ordering.
+  double _progressFraction() {
+    final total = book.totalDuration;
+    if (total <= 0) return 0;
+    final pos = (_chapterStart(_currentChapter) + _position.inMilliseconds / 1000.0) / total;
+    return pos.clamp(0.0, 1.0);
+  }
+
+  // Seconds of audio before chapter [ci] in playback (array) order. We sum durations rather
+  // than trust each chapter's `start_global`, which reflects *generation* order and is wrong
+  // for books built with --resume (a regenerated chapter carries a later run's offset).
+  double _chapterStart(int ci) {
+    var s = 0.0;
+    for (var i = 0; i < ci && i < book.chapters.length; i++) {
+      s += book.chapters[i].duration;
+    }
+    return s;
+  }
 
   // --- transport -----------------------------------------------------------
   Future<void> togglePlay() => _playing ? _player.pause() : _player.play();

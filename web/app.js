@@ -69,7 +69,8 @@ async function loadLibrary() {
       <h3>${escapeHtml(b.title || b.id)}</h3>
       <div class="author">${escapeHtml(b.author || "Unknown")}</div>
       <div class="stats"><span>${b.n_chapters} chapters</span><span>${mins} min</span>
-        <span>${escapeHtml(b.voice || "")}</span></div>`;
+        <span>${escapeHtml(b.voice || "")}</span></div>
+      ${resumeBarHtml(b)}`;
     card.addEventListener("click", () => openBook(b.id));
     const pkgEl = card.querySelector(".pkg");
     if (pkgEl) pkgEl.addEventListener("click", (e) => e.stopPropagation());  // download, don't open
@@ -82,11 +83,57 @@ async function loadLibrary() {
     });
     grid.appendChild(card);
   }
+  renderContinue();
+}
+
+// A thin progress bar on a library card for a book with a saved position. Only a fully
+// "ready" book can read as finished — a still-generating book's total_duration counts only
+// the chapters rendered so far, which would otherwise inflate the fraction toward 100%.
+function resumeBarHtml(b) {
+  const p = loadPos(b.id);
+  if (!p || !(p.frac > 0)) return "";
+  const done = b.status === "ready" && p.frac >= 0.999;
+  const pct = done ? 100 : Math.min(100, Math.max(2, Math.round(p.frac * 100)));
+  return `<div class="card-progress${done ? " done" : ""}" title="${done ? "Finished" : pct + "% listened"}">
+            <div class="card-progress-fill" style="width:${pct}%"></div></div>`;
+}
+
+// "Continue listening" hero: jump straight back into the most recently played, unfinished
+// book at its saved spot (and start playing — the Resume click is the user gesture).
+function renderContinue() {
+  const sec = $("#continueSection");
+  let best = null;
+  for (const b of state.books) {
+    const p = loadPos(b.id);
+    if (!p || p.updated == null || p.ci == null) continue;
+    // A fully-ready book at the end is finished; a generating book never is (its fraction
+    // is measured against only the chapters rendered so far).
+    if (b.status === "ready" && p.frac != null && p.frac >= 0.999) continue;
+    if (!best || (p.updated || 0) > (best.p.updated || 0)) best = { b, p };
+  }
+  if (!best) { sec.hidden = true; sec.innerHTML = ""; return; }
+  const { b, p } = best;
+  const pct = Math.max(0, Math.min(100, Math.round((p.frac || 0) * 100)));
+  sec.hidden = false;
+  sec.innerHTML = `
+    <div class="continue-card">
+      <div class="cc-cover">📖</div>
+      <div class="cc-body">
+        <div class="cc-label">▶ Continue listening</div>
+        <h3>${escapeHtml(b.title || b.id)}</h3>
+        <div class="cc-sub">Chapter ${(p.ci || 0) + 1} of ${b.n_chapters} · ${pct}%</div>
+        <div class="cc-bar"><div class="cc-fill" style="width:${pct}%"></div></div>
+      </div>
+      <button class="cc-resume primary">Resume</button>
+    </div>`;
+  sec.querySelector(".continue-card")
+     .addEventListener("click", () => openBook(b.id, { autoplay: true }));
 }
 
 function showLibrary() {
   stopGenPoll();
-  audio.pause();
+  savePos();          // capture the exact spot before clearing reader state (the async
+  audio.pause();      // 'pause' handler would otherwise run after bookId is nulled)
   state.bookId = null; state.manifest = null; state.waitingForNext = null; state.genstate = null;
   $("#libraryView").hidden = false;
   $("#readerView").hidden = true;
@@ -106,7 +153,7 @@ function startLibraryPolling() {
 function stopLibraryPolling() { if (libraryPoll) { clearInterval(libraryPoll); libraryPoll = null; } }
 
 /* ---------------------------------------------------------------- READER */
-async function openBook(bookId) {
+async function openBook(bookId, opts = {}) {
   stopLibraryPolling();
   const m = await api(`/api/books/${bookId}/manifest`);
   state.bookId = bookId;
@@ -126,11 +173,15 @@ async function openBook(bookId) {
 
   const pos = loadPos(bookId);
   const chapters = m.chapters;
+  // Restart a fully-heard book from the top — but only when it's done generating (a
+  // generating book's fraction is measured against just the chapters rendered so far).
+  const finished = m.status === "ready" && pos.frac != null && pos.frac >= 0.999;
   let target = -1;
-  if (pos.ci != null && isReady(chapters[pos.ci])) target = pos.ci;
+  if (pos.ci != null && !finished && isReady(chapters[pos.ci])) target = pos.ci;
   if (target < 0) target = chapters.findIndex(isReady);
   if (target >= 0) {
-    loadChapter(target, target === pos.ci ? (pos.t || 0) : 0, false);
+    const resuming = target === pos.ci && !finished;
+    loadChapter(target, resuming ? (pos.t || 0) : 0, resuming && !!opts.autoplay);
   } else {
     // Nothing ready yet — show a placeholder; polling loads chapter 1 when it lands.
     state.pendingInitial = true;
@@ -487,10 +538,28 @@ function clearSearch() {
 }
 
 /* ------------------------------------------------------------- persistence */
+// Resume points live per-book in localStorage as { ci, t, frac, updated }: chapter index,
+// in-chapter seconds, overall progress 0..1, and a save timestamp (used to pick the most
+// recently played book for the "Continue listening" card).
+// Seconds of audio before chapter `ci` in playback (array) order. We sum durations rather
+// than trust each chapter's `start_global`, which reflects *generation* order and is wrong
+// for books built with --resume (a regenerated chapter carries a later run's offset).
+function chapterStart(m, ci) {
+  let s = 0;
+  for (let i = 0; i < ci && i < m.chapters.length; i++) s += m.chapters[i].duration || 0;
+  return s;
+}
+
 function savePos() {
-  if (!state.bookId) return;
+  if (!state.bookId || state.ci < 0 || !state.manifest) return;
+  const m = state.manifest;
+  // While restoring (before loadedmetadata seeks) audio.currentTime is still 0 but the
+  // intended time lives in pendingSeek — prefer it so we never clobber a good position.
+  const t = audio.currentTime || pendingSeek || 0;
+  const total = m.total_duration || 0;
+  const frac = total > 0 ? Math.min(1, (chapterStart(m, state.ci) + t) / total) : 0;
   localStorage.setItem(`abk:pos:${state.bookId}`,
-    JSON.stringify({ ci: state.ci, t: audio.currentTime || 0 }));
+    JSON.stringify({ ci: state.ci, t, frac, updated: Date.now() }));
 }
 function loadPos(bookId) {
   try { return JSON.parse(localStorage.getItem(`abk:pos:${bookId}`)) || {}; }

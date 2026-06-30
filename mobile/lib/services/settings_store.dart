@@ -2,12 +2,19 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Resume point for a book: chapter list-position + chapter-relative seconds.
-/// Mirrors the web player's `{ci, t}` shape stored under `abk:pos:<bookId>`.
+/// Resume point for a book: chapter list-position + chapter-relative seconds, plus overall
+/// progress (0..1) and a save timestamp. Mirrors the web player's
+/// `{ci, t, frac, updated}` shape stored under `abk:pos:<bookId>`.
 class SavedPosition {
   final int chapterIndex;
   final double time;
-  const SavedPosition(this.chapterIndex, this.time);
+  final double frac; // overall progress across the whole book, 0..1
+  final int updated; // ms since epoch — orders books for "Continue listening"
+  const SavedPosition(this.chapterIndex, this.time,
+      {this.frac = 0, this.updated = 0});
+
+  /// Heard to the end — the library offers a fresh start rather than resume.
+  bool get finished => frac >= 0.999;
 }
 
 /// Thin wrapper over SharedPreferences for the few persisted values, mirroring the web
@@ -34,14 +41,27 @@ class SettingsStore {
     if (raw == null) return null;
     try {
       final j = jsonDecode(raw) as Map<String, dynamic>;
-      return SavedPosition((j['ci'] as num).toInt(), (j['t'] as num).toDouble());
+      return SavedPosition(
+        (j['ci'] as num).toInt(),
+        (j['t'] as num).toDouble(),
+        frac: (j['frac'] as num?)?.toDouble() ?? 0,
+        updated: (j['updated'] as num?)?.toInt() ?? 0,
+      );
     } catch (_) {
       return null;
     }
   }
 
-  void savePosition(String bookId, int chapterIndex, double time) =>
-      _p.setString('pos:$bookId', jsonEncode({'ci': chapterIndex, 't': time}));
+  void savePosition(String bookId, int chapterIndex, double time,
+          {double frac = 0, int? updated}) =>
+      _p.setString(
+          'pos:$bookId',
+          jsonEncode({
+            'ci': chapterIndex,
+            't': time,
+            'frac': frac,
+            'updated': updated ?? DateTime.now().millisecondsSinceEpoch,
+          }));
 
   void clearPosition(String bookId) => _p.remove('pos:$bookId');
 }
