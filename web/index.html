@@ -60,6 +60,7 @@
       </div>
       <div id="genBanner" class="gen-banner" hidden></div>
       <div id="bookmarksPanel" class="bookmarks" hidden></div>
+      <div id="notesPanel" class="notes-panel" hidden></div>
       <nav id="outline" class="outline"></nav>
     </aside>
     <main id="content">
@@ -81,6 +82,7 @@
       <button id="fwd10Btn" class="icon-btn" title="Forward 10s (→)">10↻</button>
       <button id="nextChBtn" class="icon-btn" title="Next chapter ( ] )">⏭</button>
       <button id="bookmarkBtn" class="icon-btn" title="Bookmark this spot (b)">🔖</button>
+      <button id="noteBtn" class="icon-btn" title="Add a note here (n)">📝</button>
     </div>
     <div class="seek">
       <span id="curTime" class="time">0:00</span>
@@ -177,11 +179,49 @@
       <kbd>[ / ]</kbd><span>Previous / next chapter</span>
       <kbd>/</kbd><span>Search this book</span>
       <kbd>B</kbd><span>Bookmark the current spot</span>
+      <kbd>N</kbd><span>Add a note at the current spot</span>
+      <kbd>Select</kbd><span>Highlight a passage · add a note</span>
       <kbd>?</kbd><span>Show this help</span>
       <kbd>Esc</kbd><span>Close · clear search · back to library</span>
     </div>
     <div class="modal-actions">
       <button type="button" id="closeShortcuts" class="primary">Got it</button>
+    </div>
+  </div>
+</div>
+
+<!-- SELECTION POPOVER (appears when you select text in the reader) -->
+<div id="notePopover" class="note-popover" hidden>
+  <button class="np-sw np-yellow" data-color="yellow" title="Highlight yellow"></button>
+  <button class="np-sw np-green"  data-color="green"  title="Highlight green"></button>
+  <button class="np-sw np-blue"   data-color="blue"   title="Highlight blue"></button>
+  <button class="np-sw np-pink"   data-color="pink"   title="Highlight pink"></button>
+  <button class="np-sw np-purple" data-color="purple" title="Highlight purple"></button>
+  <button id="notePopNote" class="np-note" title="Add a note">📝 Note</button>
+</div>
+
+<!-- NOTE EDITOR -->
+<div id="noteEditor" class="modal" hidden>
+  <div class="modal-card note-editor-card">
+    <h2 id="noteEditorTitle">Add note</h2>
+    <blockquote id="noteQuote" class="ne-quote" hidden></blockquote>
+    <div id="noteLoc" class="ne-loc"></div>
+    <textarea id="noteBody" class="ne-body" rows="5"
+              placeholder="Write your note… (Markdown is preserved on export)"></textarea>
+    <div class="ne-swatches" id="noteSwatches">
+      <button type="button" class="sw np-yellow" data-color="yellow" title="Yellow"></button>
+      <button type="button" class="sw np-green"  data-color="green"  title="Green"></button>
+      <button type="button" class="sw np-blue"   data-color="blue"   title="Blue"></button>
+      <button type="button" class="sw np-pink"   data-color="pink"   title="Pink"></button>
+      <button type="button" class="sw np-purple" data-color="purple" title="Purple"></button>
+    </div>
+    <label class="field ne-tags">Tags <span class="ne-hint">(comma-separated)</span>
+      <input id="noteTags" type="text" placeholder="idea, todo, question" />
+    </label>
+    <div class="modal-actions">
+      <button type="button" id="noteDelete" class="ghost ne-del" hidden>Delete</button>
+      <button type="button" id="noteCancel" class="ghost">Cancel</button>
+      <button type="button" id="noteSave" class="primary">Save note</button>
     </div>
   </div>
 </div>

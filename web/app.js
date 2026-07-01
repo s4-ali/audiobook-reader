@@ -43,6 +43,7 @@ const state = {
   waitingForNext: null,   // chapter index we're waiting on before auto-advancing
   pendingInitial: false,  // opened a book with no chapter ready yet
   genstate: null,         // latest /genstate response while generating
+  notes: [],              // server-backed notes for the open book (see app/notes.py)
 };
 let manifestPoll = null;  // interval while a book is still generating
 let libraryPoll = null;   // interval while the library has generating books
@@ -155,6 +156,7 @@ function showLibrary() {
   savePos();          // capture the exact spot before clearing reader state (the async
   audio.pause();      // 'pause' handler would otherwise run after bookId is nulled)
   state.bookId = null; state.manifest = null; state.waitingForNext = null; state.genstate = null;
+  state.notes = []; hideNotePopover(); $("#notesPanel").hidden = true;
   $("#libraryView").hidden = false;
   $("#readerView").hidden = true;
   $("#player").hidden = true;
@@ -191,6 +193,7 @@ async function openBook(bookId, opts = {}) {
   renderBookmarks();
   clearSearch();
   updateGenBanner();
+  await loadNotes(bookId);
 
   const pos = loadPos(bookId);
   const chapters = m.chapters;
@@ -375,6 +378,7 @@ function loadChapter(ci, seekTime = 0, autoplay = false) {
   pendingSeek = seekTime; pendingPlay = autoplay;
 
   renderChapterText(ch);
+  applyHighlights();
   markCurrentChapter();
   $("#npChapter").textContent = ch.title;
   $("#chapterHeader").innerHTML =
@@ -387,6 +391,7 @@ function loadChapter(ci, seekTime = 0, autoplay = false) {
 function renderChapterText(ch) {
   const reader = $("#reader");
   reader.innerHTML = "";
+  hideNotePopover();
   state.spanEls = [];
   let p = document.createElement("p");
   (ch.sentences || []).forEach((sent) => {
@@ -394,7 +399,10 @@ function renderChapterText(ch) {
     span.className = "sent";
     span.dataset.si = sent.i;
     span.textContent = sent.t + " ";
-    span.addEventListener("click", () => seekTo(sent.s, true));
+    span.addEventListener("click", () => {
+      if (!window.getSelection().isCollapsed) return;  // a drag-select just happened — don't seek
+      seekTo(sent.s, true);
+    });
     p.appendChild(span);
     state.spanEls[sent.i] = span;
     if (sent.p) { reader.appendChild(p); p = document.createElement("p"); }
@@ -705,6 +713,323 @@ function renderBookmarks() {
 }
 $("#bookmarkBtn").addEventListener("click", addBookmark);
 
+/* ------------------------------------------------------------------- notes */
+// Notes are server-backed (a sibling notes.json per book — see app/notes.py). Each note
+// anchors to a sentence range [si..sj] with a durable text quote (exact/prefix/suffix) plus
+// fast-path hints (si/sj, cs/ce, s/e). A "highlight" is a note with an empty body.
+const NOTE_COLORS = ["yellow", "green", "blue", "pink", "purple"];
+const noteColor = (c) => (NOTE_COLORS.includes(c) ? c : "yellow");
+
+async function loadNotes(bookId) {
+  try {
+    const { notes } = await api(`/api/books/${bookId}/notes`);
+    state.notes = Array.isArray(notes) ? notes : [];
+  } catch { state.notes = []; }
+  renderNotes();
+}
+const notesForChapter = (ci) => state.notes.filter((n) => n.ch === ci);
+
+/* --- re-anchoring: map a note's stored quote back onto the current chapter's sentences --- */
+function joinSentences(a, b) {
+  const s = state.sentences;
+  if (a < 0 || b >= s.length || a > b) return null;
+  const out = [];
+  for (let i = a; i <= b; i++) out.push(s[i].t);
+  return out.join(" ");
+}
+// Returns {si, sj} for the note in the current chapter, or null if it can't be placed
+// (orphan — still listed in the panel, just not painted). `recon`/`starts` are the
+// reconstructed chapter text + per-sentence start offsets, built once per applyHighlights.
+function reanchor(note, recon, starts) {
+  const exact = (note.exact || "").trim();
+  const inRange = note.si >= 0 && note.sj < state.sentences.length && note.si <= note.sj;
+  if (!exact) return inRange ? { si: note.si, sj: note.sj } : null;
+  if (inRange && joinSentences(note.si, note.sj) === exact) return { si: note.si, sj: note.sj };
+  let idx = recon.indexOf(exact);
+  if (idx < 0) return null;
+  if (note.prefix || note.suffix) {                     // disambiguate repeated quotes
+    const norm = (x) => x.replace(/\s+/g, " ").trim();  // tolerate separator whitespace
+    const wantPre = norm(note.prefix || ""), wantSuf = norm(note.suffix || "");
+    for (let p = idx; p >= 0; p = recon.indexOf(exact, p + 1)) {
+      const pre = norm(recon.slice(Math.max(0, p - wantPre.length - 4), p));
+      const suf = norm(recon.slice(p + exact.length, p + exact.length + wantSuf.length + 4));
+      if ((!wantPre || pre.endsWith(wantPre)) && (!wantSuf || suf.startsWith(wantSuf))) { idx = p; break; }
+    }
+  }
+  const end = idx + exact.length;
+  let si = 0, sj = 0;
+  for (let i = 0; i < starts.length; i++) {
+    if (starts[i] <= idx) si = i;
+    if (starts[i] < end) sj = i;
+  }
+  return { si, sj };
+}
+
+// Paint highlight washes + note markers onto the current chapter's spans.
+function applyHighlights() {
+  $$("#reader .note-marker").forEach((m) => m.remove());
+  state.spanEls.forEach((el) => { if (el) el.className = "sent"; });
+  const chNotes = notesForChapter(state.ci);
+  if (chNotes.length) {
+    const starts = []; let acc = 0;
+    const recon = state.sentences.map((s, i) => { starts[i] = acc; acc += s.t.length + 1; return s.t; }).join(" ");
+    for (const note of chNotes) {
+      const a = reanchor(note, recon, starts);
+      note._orphan = !a;
+      if (!a) continue;
+      const cls = "hl-" + noteColor(note.color);
+      for (let i = a.si; i <= a.sj && i < state.spanEls.length; i++) {
+        if (state.spanEls[i]) state.spanEls[i].classList.add(cls);
+      }
+      if ((note.note || "").trim()) {
+        if (state.spanEls[a.si]) state.spanEls[a.si].classList.add("has-note");
+        const last = state.spanEls[a.sj];
+        if (last) {
+          const mark = document.createElement("sup");
+          mark.className = "note-marker";
+          mark.textContent = "✎";
+          mark.title = "Edit note";
+          mark.addEventListener("click", (e) => { e.stopPropagation(); openNoteEditor({ note }); });
+          last.after(mark);
+        }
+      }
+    }
+  }
+  // Restore the karaoke class on whatever sentence is currently playing (.active wins by
+  // source order over any highlight on the same span).
+  if (state.activeSi >= 0 && state.spanEls[state.activeSi]) state.spanEls[state.activeSi].classList.add("active");
+}
+
+/* --- selecting text → a floating popover --- */
+function selectionToAnchor() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
+  const range = sel.getRangeAt(0);
+  const reader = $("#reader");
+  if (!reader.contains(range.commonAncestorContainer)) return null;
+  let si = -1, sj = -1;
+  state.spanEls.forEach((el, i) => {
+    if (el && range.intersectsNode(el)) { if (si < 0) si = i; sj = i; }
+  });
+  if (si < 0) return null;
+  return buildAnchor(si, sj, range.getBoundingClientRect());
+}
+
+function buildAnchor(si, sj, rect) {
+  const s = state.sentences;
+  if (si < 0 || sj >= s.length || si > sj) return null;
+  const exact = [];
+  for (let i = si; i <= sj; i++) exact.push(s[i].t);
+  return {
+    ch: state.ci, si, sj, cs: s[si].cs, ce: s[sj].ce, s: s[si].s, e: s[sj].e,
+    exact: exact.join(" "),
+    prefix: s.slice(Math.max(0, si - 3), si).map((x) => x.t).join(" ").slice(-32),
+    suffix: s.slice(sj + 1, sj + 4).map((x) => x.t).join(" ").slice(0, 32),
+    rect,
+  };
+}
+const anchorPayload = (a) =>
+  ({ ch: a.ch, si: a.si, sj: a.sj, cs: a.cs, ce: a.ce, s: a.s, e: a.e,
+     exact: a.exact, prefix: a.prefix, suffix: a.suffix });
+
+let popoverAnchor = null;
+function showNotePopover(anchor) {
+  popoverAnchor = anchor;
+  const pop = $("#notePopover");
+  pop.hidden = false;
+  const r = anchor.rect || { left: 0, top: 0, width: 0, height: 0, bottom: 0 };
+  const pw = pop.offsetWidth || 240, ph = pop.offsetHeight || 36;
+  let left = Math.max(8, Math.min(r.left + r.width / 2 - pw / 2, window.innerWidth - pw - 8));
+  let top = r.top - ph - 8;
+  if (top < 8) top = r.bottom + 8;              // flip below when there's no room above
+  pop.style.left = left + "px";
+  pop.style.top = top + "px";
+}
+function hideNotePopover() { const p = $("#notePopover"); if (p) p.hidden = true; popoverAnchor = null; }
+
+function refreshSelectionPopover() {
+  if ($("#readerView").hidden || !$("#noteEditor").hidden) return;
+  const anchor = selectionToAnchor();
+  if (anchor) showNotePopover(anchor); else hideNotePopover();
+}
+document.addEventListener("selectionchange", debounce(refreshSelectionPopover, 180));
+$("#reader").addEventListener("mouseup", () => setTimeout(refreshSelectionPopover, 0));
+$("#content").addEventListener("scroll", () => { if (!$("#notePopover").hidden) hideNotePopover(); });
+
+// mousedown + preventDefault: act before the click collapses the selection.
+$$("#notePopover .np-sw").forEach((btn) => btn.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  if (popoverAnchor) createHighlight(popoverAnchor, btn.dataset.color);
+}));
+$("#notePopNote").addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  const a = popoverAnchor;
+  hideNotePopover();
+  if (a) openNoteEditor({ draft: a });
+});
+
+/* --- create / persist --- */
+async function saveNewNote(payload) {
+  const temp = { ...payload, id: "tmp:" + Date.now(), tags: payload.tags || [] };
+  temp.kind = (payload.note || "").trim() ? "note" : "highlight";
+  state.notes.push(temp);
+  applyHighlights(); renderNotes();
+  try {
+    const saved = await api(`/api/books/${state.bookId}/notes`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+    const i = state.notes.findIndex((n) => n.id === temp.id);
+    if (i >= 0) state.notes[i] = saved; else state.notes.push(saved);
+    toast(temp.kind === "note" ? "📝 Note saved." : "Highlighted.");
+  } catch (e) {
+    state.notes = state.notes.filter((n) => n.id !== temp.id);
+    toast("Couldn't save note: " + (e.message || "error"));
+  }
+  applyHighlights(); renderNotes();
+}
+function createHighlight(anchor, color) {
+  window.getSelection().removeAllRanges();
+  hideNotePopover();
+  saveNewNote({ ...anchorPayload(anchor), color: noteColor(color), note: "" });
+}
+
+/* --- the note editor --- */
+let editingNote = null;   // note being edited, or null when creating
+let editorDraft = null;   // anchor when creating
+let editorColor = "yellow";
+
+function syncEditorSwatches() {
+  $$("#noteSwatches .sw").forEach((b) => b.classList.toggle("active", b.dataset.color === editorColor));
+}
+$$("#noteSwatches .sw").forEach((b) =>
+  b.addEventListener("click", () => { editorColor = b.dataset.color; syncEditorSwatches(); }));
+
+function openNoteEditor(target) {
+  window.getSelection().removeAllRanges();
+  hideNotePopover();
+  editingNote = target.note || null;
+  editorDraft = target.draft || null;
+  const n = editingNote, a = editorDraft;
+  const quote = (n ? n.exact : a ? a.exact : "") || "";
+  const q = $("#noteQuote");
+  q.hidden = !quote; q.textContent = quote;
+  const ci = n ? n.ch : a ? a.ch : state.ci;
+  const sec = n ? n.s : a ? a.s : 0;
+  const chTitle = (state.manifest.chapters[ci] || {}).title || `Chapter ${ci + 1}`;
+  $("#noteLoc").textContent = `${chTitle} · ${fmtTime(sec)}`;
+  $("#noteBody").value = n ? (n.note || "") : "";
+  $("#noteTags").value = n ? (n.tags || []).join(", ") : "";
+  editorColor = noteColor(n ? n.color : "yellow");
+  syncEditorSwatches();
+  $("#noteEditorTitle").textContent = n ? "Edit note" : "Add note";
+  $("#noteDelete").hidden = !n;
+  $("#noteEditor").hidden = false;
+  setTimeout(() => $("#noteBody").focus(), 0);
+}
+function closeNoteEditor() { $("#noteEditor").hidden = true; editingNote = null; editorDraft = null; }
+
+async function saveNoteEditor() {
+  const body = $("#noteBody").value;
+  const tags = $("#noteTags").value;
+  if (editingNote) {
+    const id = editingNote.id;
+    const idx = state.notes.findIndex((n) => n.id === id);
+    if (idx >= 0) state.notes[idx] = { ...state.notes[idx], note: body, color: editorColor,
+      tags: parseTags(tags), kind: body.trim() ? "note" : "highlight" };
+    closeNoteEditor(); applyHighlights(); renderNotes();
+    if (String(id).startsWith("tmp:")) return;   // not persisted yet; optimistic copy stands
+    try {
+      const saved = await api(`/api/books/${state.bookId}/notes/${id}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note: body, tags, color: editorColor }),
+      });
+      const i = state.notes.findIndex((n) => n.id === id);
+      if (i >= 0) state.notes[i] = saved;
+      applyHighlights(); renderNotes();
+    } catch (e) { toast("Couldn't update note: " + (e.message || "error")); loadNotes(state.bookId); }
+  } else if (editorDraft) {
+    const a = editorDraft;
+    closeNoteEditor();
+    await saveNewNote({ ...anchorPayload(a), color: editorColor, note: body, tags });
+  } else {
+    closeNoteEditor();
+  }
+}
+const parseTags = (v) =>
+  String(v || "").split(/[,\n]+/).map((t) => t.trim().replace(/^#/, "")).filter(Boolean);
+
+async function removeNote(note) {
+  if (!note) return;
+  const id = note.id;
+  if ((note.note || "").trim() && !confirm("Delete this note?")) return;
+  state.notes = state.notes.filter((n) => n.id !== id);
+  if (editingNote && editingNote.id === id) closeNoteEditor();
+  applyHighlights(); renderNotes();
+  if (String(id).startsWith("tmp:")) return;
+  try { await api(`/api/books/${state.bookId}/notes/${id}`, { method: "DELETE" }); }
+  catch (e) { toast("Couldn't delete note: " + (e.message || "error")); loadNotes(state.bookId); }
+}
+
+$("#noteSave").addEventListener("click", saveNoteEditor);
+$("#noteCancel").addEventListener("click", closeNoteEditor);
+$("#noteDelete").addEventListener("click", () => removeNote(editingNote));
+$("#noteEditor").addEventListener("click", (e) => { if (e.target.id === "noteEditor") closeNoteEditor(); });
+
+/* --- note at the current playback spot (great while listening) --- */
+function startNoteAtCurrent() {
+  if (!state.bookId || state.ci < 0 || !state.sentences.length) { toast("Open a chapter first."); return; }
+  let si = state.activeSi >= 0 ? state.activeSi : findActiveIndex(audio.currentTime);
+  if (si < 0) si = 0;
+  const anchor = buildAnchor(si, si, null);
+  if (anchor) openNoteEditor({ draft: anchor });
+}
+$("#noteBtn").addEventListener("click", startNoteAtCurrent);
+
+/* --- the sidebar notes panel --- */
+function jumpToNote(n) {
+  const ch = state.manifest.chapters[n.ch];
+  if (!ch) { toast("That chapter isn't in this book anymore."); return; }
+  if (!isReady(ch)) { toast("That chapter isn't ready yet."); return; }
+  loadChapter(n.ch, n.s || 0, true);
+  setTimeout(() => { const el = state.spanEls[n.si]; if (el) scrollIntoViewIfNeeded(el); }, 150);
+}
+
+function renderNotes() {
+  const panel = $("#notesPanel");
+  const list = state.bookId
+    ? [...state.notes].sort((a, b) => (a.ch - b.ch) || (a.si - b.si) || (a.s - b.s)) : [];
+  if (!list.length) { panel.hidden = true; panel.innerHTML = ""; return; }
+  panel.hidden = false;
+  panel.innerHTML =
+    `<div class="np-head">📝 Notes · ${list.length}<button class="np-export" title="Export notes">⤓ Export</button></div>` +
+    list.map((n) => {
+      const chTitle = (state.manifest.chapters[n.ch] || {}).title || `Chapter ${n.ch + 1}`;
+      const body = (n.note || "").trim();
+      const tags = (n.tags || []).map((t) => `<span class="tag">#${escapeHtml(t)}</span>`).join("");
+      return `<div class="note" data-id="${escapeHtml(n.id)}">
+        <span class="note-chip np-${noteColor(n.color)}"></span>
+        <div class="note-main">
+          ${n.exact ? `<div class="note-quote">${escapeHtml(n.exact)}</div>` : ""}
+          ${body ? `<div class="note-body">${escapeHtml(body)}</div>` : ""}
+          <div class="note-loc">${escapeHtml(chTitle)} · ${fmtTime(n.s)}</div>
+          ${tags ? `<div class="note-tags">${tags}</div>` : ""}
+          ${n._orphan ? `<div class="note-orphan">⚠ passage moved — jump by time</div>` : ""}
+        </div>
+        <button class="note-del" title="Delete note">✕</button>
+      </div>`;
+    }).join("");
+  $(".np-export", panel).addEventListener("click", (e) => {
+    e.stopPropagation();
+    buildExportMenu();
+    $("#exportMenu").hidden = false;
+  });
+  $$(".note", panel).forEach((el) => {
+    const n = state.notes.find((x) => x.id === el.dataset.id);
+    el.addEventListener("click", () => { if (n) jumpToNote(n); });
+    el.querySelector(".note-del").addEventListener("click", (e) => { e.stopPropagation(); removeNote(n); });
+  });
+}
+
 /* ----------------------------------------------------- OS media controls */
 // Wire the page into the OS media session: lock-screen / notification controls, hardware
 // media keys, Bluetooth & car controls, and a system scrubber — all feature-detected so
@@ -846,6 +1171,9 @@ function buildExportMenu() {
     `<a download href="/api/books/${id}/transcript.txt">📄 Transcript (.txt)</a>`,
     `<a download href="/api/books/${id}/subtitles.vtt">💬 Subtitles (.vtt)</a>`,
     `<a download href="/api/books/${id}/subtitles.srt">💬 Subtitles (.srt)</a>`,
+    `<div class="em-sep">Notes</div>`,
+    `<a download href="/api/books/${id}/notes.md">📝 Notes (Markdown)</a>`,
+    `<a download href="/api/books/${id}/notes.md?flavor=obsidian">🔮 Notes (Obsidian)</a>`,
   ];
   if (state.ci >= 0 && state.manifest && isReady(state.manifest.chapters[state.ci])) {
     rows.push(`<div class="em-sep">This chapter</div>`,
@@ -872,6 +1200,8 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (!$("#displayMenu").hidden) { $("#displayMenu").hidden = true; return; }
     if (!$("#exportMenu").hidden) { $("#exportMenu").hidden = true; return; }
+    if (!$("#noteEditor").hidden) { closeNoteEditor(); return; }   // before the typing guard, so it closes from the textarea
+    if (!$("#notePopover").hidden) { hideNotePopover(); return; }
     if (!$("#shortcutsModal").hidden) { closeShortcuts(); return; }
     if ($("#modal").hidden === false) closeModal();
     else if ($("#searchInput").value) clearSearch();
@@ -890,6 +1220,7 @@ document.addEventListener("keydown", (e) => {
     case "[": loadChapter(state.ci - 1, 0, true); break;
     case "]": loadChapter(state.ci + 1, 0, true); break;
     case "b": case "B": addBookmark(); break;
+    case "n": case "N": startNoteAtCurrent(); break;
   }
 });
 function jumpSentence(dir) {

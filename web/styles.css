@@ -40,6 +40,16 @@
   --reader-font: Georgia, "Iowan Old Style", "Times New Roman", serif;
   --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --reader-size: 20px;   /* adjustable from Display settings */
+
+  /* Note highlight washes (translucent → readable over dark & light themes alike) and the
+     matching solid swatch/chip colors. Theme-independent by design. */
+  --hl-yellow: rgba(249, 226, 175, .42);
+  --hl-green:  rgba(166, 227, 161, .40);
+  --hl-blue:   rgba(137, 180, 250, .40);
+  --hl-pink:   rgba(243, 139, 168, .38);
+  --hl-purple: rgba(203, 166, 247, .42);
+  --sw-yellow: #f9e2af; --sw-green: #a6e3a1; --sw-blue: #89b4fa;
+  --sw-pink: #f38ba8; --sw-purple: #cba6f7;
 }
 
 /* Alternate themes — override the palette tokens; role tokens (--bg/--text/--accent/…)
@@ -336,6 +346,17 @@ code { background: var(--surface1); padding: 1px 6px; border-radius: var(--r-sm)
 .reader p { margin: 0 0 1.1em; }
 .sent { cursor: pointer; border-radius: var(--r-sm); padding: 0 1px; transition: background .1s; }
 .sent:hover { background: var(--mauve-15); }
+/* Note highlights: translucent washes that keep the theme's text color readable. Placed
+   BEFORE .sent.active (equal specificity) so the karaoke active plane wins while playing. */
+.sent.hl-yellow { background: var(--hl-yellow); }
+.sent.hl-green  { background: var(--hl-green); }
+.sent.hl-blue   { background: var(--hl-blue); }
+.sent.hl-pink   { background: var(--hl-pink); }
+.sent.hl-purple { background: var(--hl-purple); }
+.sent.has-note { text-decoration: underline dotted var(--accent); text-underline-offset: 3px; }
+.note-marker { cursor: pointer; color: var(--accent); font-size: .7em; vertical-align: super;
+  padding: 0 1px; user-select: none; }
+.note-marker:hover { color: var(--text); }
 .sent.active { background: var(--highlight); color: var(--highlight-text); }
 
 /* Player bar */
@@ -425,3 +446,105 @@ input[type=range]::-webkit-slider-thumb {
   .player { grid-template-columns: 1fr; gap: 8px; }
   .now-playing, .extras { display: none; }
 }
+
+/* ------------------------------------------------------------------ notes */
+/* Solid swatch/chip colors — shared by the popover, the editor and the panel. */
+.np-yellow { background: var(--sw-yellow); }
+.np-green  { background: var(--sw-green); }
+.np-blue   { background: var(--sw-blue); }
+.np-pink   { background: var(--sw-pink); }
+.np-purple { background: var(--sw-purple); }
+
+/* Selection popover (floats by the selected text) */
+.note-popover {
+  position: fixed; z-index: 70; display: flex; align-items: center; gap: 6px;
+  background: var(--surface2); padding: 6px 8px; border-radius: var(--r-full);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .35);
+}
+.note-popover .np-sw {
+  width: 20px; height: 20px; border-radius: 50%; border: 2px solid transparent;
+  cursor: pointer; padding: 0;
+}
+.note-popover .np-sw:hover { border-color: var(--text); transform: scale(1.12); }
+.note-popover .np-note {
+  background: transparent; border: none; color: var(--text); cursor: pointer;
+  font-size: 13px; padding: 2px 8px; border-radius: var(--r-md); white-space: nowrap;
+}
+.note-popover .np-note:hover { background: var(--surface1); }
+
+/* Note editor card (reuses the .modal backdrop) */
+.note-editor-card { max-width: 520px; width: 92%; }
+.note-editor-card h2 { margin: 0 0 10px; font-size: 18px; }
+.ne-quote {
+  margin: 0 0 8px; padding: 8px 12px; border-left: 3px solid var(--accent);
+  background: var(--surface0); color: var(--muted); font-size: 13px; font-style: italic;
+  max-height: 96px; overflow-y: auto; border-radius: 0 var(--r-sm) var(--r-sm) 0;
+}
+.ne-loc { font-size: 11px; color: var(--accent); margin: 0 0 10px; }
+.ne-body {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 90px;
+  font-family: var(--ui-font); font-size: 14px; line-height: 1.5; color: var(--text);
+  background: var(--surface0); border: 1px solid var(--surface2); border-radius: var(--r-md);
+  padding: 10px 12px;
+}
+.ne-body:focus { outline: none; border-color: var(--accent); }
+.ne-swatches { display: flex; gap: 10px; margin: 12px 0; }
+.ne-swatches .sw {
+  width: 24px; height: 24px; border-radius: 50%; border: 2px solid transparent;
+  cursor: pointer; padding: 0;
+}
+.ne-swatches .sw:hover { transform: scale(1.1); }
+.ne-swatches .sw.active { box-shadow: 0 0 0 2px var(--surface0), 0 0 0 4px var(--text); }
+.ne-tags { display: block; font-size: 12px; color: var(--muted); }
+.ne-tags .ne-hint { opacity: .7; }
+.ne-tags input {
+  display: block; width: 100%; box-sizing: border-box; margin-top: 4px;
+  font-family: var(--ui-font); font-size: 13px; color: var(--text);
+  background: var(--surface0); border: 1px solid var(--surface2); border-radius: var(--r-md);
+  padding: 8px 10px;
+}
+.ne-tags input:focus { outline: none; border-color: var(--accent); }
+.note-editor-card .modal-actions { margin-top: 16px; display: flex; gap: 8px; align-items: center; }
+.note-editor-card .ne-del { margin-right: auto; }
+.note-editor-card .ne-del:hover { color: var(--red); }
+
+/* Notes panel (sidebar) — mirrors .bookmarks */
+.notes-panel { margin: 2px 10px 6px; max-height: 34%; overflow-y: auto; flex: 0 0 auto; }
+.notes-panel .np-head {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted);
+  padding: 6px 4px 4px; position: sticky; top: 0; background: var(--surface0);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.notes-panel .np-export {
+  background: transparent; border: none; color: var(--accent); cursor: pointer;
+  font-size: 11px; text-transform: none; letter-spacing: 0; padding: 2px 4px; border-radius: var(--r-sm);
+}
+.notes-panel .np-export:hover { background: var(--surface1); }
+.notes-panel .note {
+  display: flex; align-items: flex-start; gap: 7px;
+  padding: 7px 8px; border-radius: var(--r-md); cursor: pointer;
+}
+.notes-panel .note:hover { background: var(--surface1); }
+.notes-panel .note-chip { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; margin-top: 5px; }
+.notes-panel .note-main { flex: 1; min-width: 0; }
+.notes-panel .note-quote {
+  font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; font-style: italic;
+}
+.notes-panel .note-body {
+  font-size: 12.5px; color: var(--text); margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.notes-panel .note-loc { font-size: 10px; color: var(--accent); margin-top: 2px; }
+.notes-panel .note-tags { margin-top: 3px; display: flex; flex-wrap: wrap; gap: 4px; }
+.notes-panel .note-tags .tag {
+  font-size: 10px; color: var(--accent); background: var(--mauve-15);
+  padding: 0 5px; border-radius: var(--r-full);
+}
+.notes-panel .note-orphan { color: var(--yellow); font-size: 10px; margin-top: 2px; }
+.notes-panel .note-del {
+  flex: 0 0 auto; background: transparent; border: none; color: var(--muted);
+  cursor: pointer; font-size: 12px; border-radius: var(--r-sm); padding: 2px 6px; opacity: 0;
+}
+.notes-panel .note:hover .note-del { opacity: 1; }
+.notes-panel .note-del:hover { color: var(--red); }

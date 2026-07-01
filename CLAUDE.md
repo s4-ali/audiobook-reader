@@ -6,8 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A fully local system that turns PDFs and EPUBs into navigable audiobooks narrated with
 **Kokoro-82M**, plus a no-build web player (chapter/topic nav, full-text search,
-karaoke-style sentence highlighting). Python (FastAPI + ingest pipeline) backend; vanilla
-JS frontend. Everything runs on the user's machine — no cloud.
+karaoke-style sentence highlighting, note-taking with Markdown/Obsidian export). Python
+(FastAPI + ingest pipeline) backend; vanilla JS frontend. Everything runs on the user's
+machine — no cloud.
 
 ## Commands
 
@@ -96,6 +97,25 @@ syncs the active sentence to playback via the `<audio>` `timeupdate` event + bin
 sentence start times. Search and resume are client-side (search indexes manifest sentences;
 position saved to `localStorage`). During generation it polls `genstate`; the generation
 banner doubles as the pause/resume/cancel control surface.
+
+### Notes / annotations (`app/notes.py`) — a second sibling contract
+Per-book reading notes live in `library/books/<id>/notes.json` (`{book, version, notes[]}`),
+**never inside `manifest.json`** (ingest rewrites the manifest; notes must survive that).
+`app/notes.py` owns storage (locked, atomic write like `_write_manifest_atomic`) + validation
++ pure `to_markdown`/`to_obsidian` exporters (mirrors `subtitles.py`). One record type: a
+`highlight` is a `note` with an empty body. Each note anchors to a **sentence range `[si..sj]`**
+with a durable text quote (`exact` + `prefix`/`suffix`, Hypothesis-style re-anchoring) plus
+fast-path hints (`si/sj`, `cs/ce`, `s/e`) copied from the manifest. **`cs`/`ce` index the
+original extracted chapter text the frontend never sees — they're pass-through metadata, not
+used for DOM/re-anchoring** (the player re-anchors against per-sentence `t`). Server endpoints
+(in `server.py`, mirroring the transcript/subtitles style): `GET/POST /api/books/{id}/notes`,
+`PATCH/DELETE …/notes/{note_id}`, `GET …/notes.md?flavor=obsidian|plain`, and
+`POST …/notes/sync` (merge by `id`, last-write-wins on `updated` — the mobile push/pull
+primitive). The player (`web/app.js`) adds select-to-highlight, a note editor, a sidebar
+`#notesPanel`, in-text highlight washes (`.sent.hl-*`, painted so `.active` still wins), and
+key `n` / the 📝 button for a note at the current spot. `.abk` packaging bundles `notes.json`
+when present, and the mobile app (`mobile/lib/models/note.dart`, `services/notes_store.dart`)
+mirrors the record + exporters field-for-field and syncs via `…/notes/sync`.
 
 ### `.abk` packaging + mobile app (`app/export.py`, `mobile/`)
 `export.package_book(book_id)` zips a **ready** book's `manifest.json` + chapter MP3s

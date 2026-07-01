@@ -27,6 +27,20 @@ const cRed = Color(0xFFF38BA8); // error
 const cGreen = Color(0xFFA6E3A1); // success
 const cYellow = Color(0xFFF9E2AF); // warning
 const cTeal = Color(0xFF94E2D5); // highlight
+const cBlue = Color(0xFF89B4FA); // note highlight (blue)
+
+/// Solid swatch color for each note highlight, keyed by the record's `color` string.
+const noteSwatchColors = <String, Color>{
+  'yellow': cYellow,
+  'green': cGreen,
+  'blue': cBlue,
+  'pink': cRed,
+  'purple': cMauve,
+};
+
+/// The translucent in-text wash for a highlight color (readable over the dark reader).
+Color noteWash(String color) =>
+    (noteSwatchColors[color] ?? cYellow).withValues(alpha: 0.30);
 
 ThemeData buildTheme() {
   final scheme = ColorScheme.fromSeed(

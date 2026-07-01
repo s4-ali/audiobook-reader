@@ -70,6 +70,11 @@ def package_book(book_id: str, out_dir: Optional[Path] = None) -> Path:
     # ZIP_STORED: the payload is already-compressed MP3, so deflate burns CPU for ~0 gain.
     with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_STORED) as zf:
         zf.write(book_dir / "manifest.json", "manifest.json")
+        # Ship reading notes with the book when present, so they land next to the manifest
+        # in the same flat layout the mobile app reads (see app/notes.py).
+        notes_file = book_dir / "notes.json"
+        if notes_file.exists():
+            zf.write(notes_file, "notes.json")
         for fp in audio_files:
             zf.write(fp, fp.name)
     os.replace(tmp_path, out_path)  # atomic: never leave a half-written .abk

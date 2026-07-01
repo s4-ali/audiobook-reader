@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Body
 from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -165,6 +165,73 @@ def api_subtitles_book(book_id: str, ext: str):
 @app.get("/api/books/{book_id}/chapter/{ci}/subtitles.{ext}")
 def api_subtitles_chapter(book_id: str, ci: int, ext: str):
     return _subtitle_response(book_id, ci, ext)
+
+
+# --------------------------------------------------------------------- reading notes
+# Notes live in a sibling notes.json (see app/notes.py) — never in the manifest. CRUD +
+# Markdown/Obsidian export (mirrors the transcript/subtitles endpoints) + a merge-sync
+# primitive the mobile app uses over the LAN.
+@app.get("/api/books/{book_id}/notes")
+def api_notes_list(book_id: str):
+    _manifest_or_404(book_id)
+    from . import notes
+    return {"notes": notes.list_notes(book_id)}
+
+
+@app.post("/api/books/{book_id}/notes", status_code=201)
+def api_notes_create(book_id: str, payload: dict = Body(...)):
+    m = _manifest_or_404(book_id)
+    from . import notes
+    try:
+        return notes.create_note(book_id, payload, manifest=m)
+    except notes.NoteError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/books/{book_id}/notes/sync")
+def api_notes_sync(book_id: str, payload: dict = Body(...)):
+    _manifest_or_404(book_id)
+    from . import notes
+    incoming = payload.get("notes") if isinstance(payload, dict) else None
+    if not isinstance(incoming, list):
+        raise HTTPException(400, "Expected a JSON object with a 'notes' list")
+    return {"notes": notes.merge_notes(book_id, incoming)}
+
+
+@app.patch("/api/books/{book_id}/notes/{note_id}")
+def api_notes_update(book_id: str, note_id: str, payload: dict = Body(...)):
+    _manifest_or_404(book_id)
+    from . import notes
+    try:
+        n = notes.update_note(book_id, note_id, payload)
+    except notes.NoteError as e:
+        raise HTTPException(400, str(e))
+    if n is None:
+        raise HTTPException(404, "Note not found")
+    return n
+
+
+@app.delete("/api/books/{book_id}/notes/{note_id}")
+def api_notes_delete(book_id: str, note_id: str):
+    _manifest_or_404(book_id)
+    from . import notes
+    if not notes.delete_note(book_id, note_id):
+        raise HTTPException(404, "Note not found")
+    return {"ok": True}
+
+
+@app.get("/api/books/{book_id}/notes.md")
+def api_notes_md(book_id: str, flavor: str = "plain"):
+    m = _manifest_or_404(book_id)
+    from . import notes
+    ns = notes.list_notes(book_id)
+    if flavor == "obsidian":
+        body, suffix = notes.to_obsidian(m, ns), "-obsidian"
+    else:
+        body, suffix = notes.to_markdown(m, ns), ""
+    return Response(body, media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition":
+                             f'attachment; filename="{book_id}-notes{suffix}.md"'})
 
 
 @app.get("/api/books/{book_id}/feed.xml")

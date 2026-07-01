@@ -1,12 +1,18 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:provider/provider.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:uuid/uuid.dart';
 
 import '../models/manifest.dart';
+import '../models/note.dart';
 import '../services/library_store.dart';
+import '../services/notes_store.dart';
 import '../services/player_controller.dart';
 import '../services/settings_store.dart';
+import '../services/transfer.dart';
 import '../theme.dart';
 import '../util.dart';
 
@@ -38,10 +44,18 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   double? _scrub; // 0..1 while the user drags the seek bar
 
+  late final NotesStore _notesStore;
+  List<Note> _noteList = [];
+  final Map<int, String> _hlColor = {}; // sentence index -> color (current chapter only)
+  final Map<int, GlobalKey> _paraKeys = {}; // paragraph index -> key (long-press hit-test)
+  final Uuid _uuid = const Uuid();
+
   @override
   void initState() {
     super.initState();
     _c = PlayerController(widget.installed, context.read<SettingsStore>());
+    _notesStore = context.read<NotesStore>();
+    _loadNotes();
     _c.init().then((_) {
       if (mounted && widget.autoplay) _c.play();
     });
@@ -68,6 +82,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _disposeRecognizers();
     _paras = [];
     _sentToPara.clear();
+    _paraKeys.clear();
     _lastScrolledPara = -1;
     final ch = _c.currentChapter;
     if (ch == null) return;
@@ -88,6 +103,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         _sentToPara[s.i] = p;
       }
     }
+    _rebuildHighlights();
   }
 
   /// Keep the active sentence visible (scrolls when its paragraph changes).
@@ -140,6 +156,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   icon: const Icon(Icons.search),
                   tooltip: 'Search',
                   onPressed: _showSearch),
+              IconButton(
+                  icon: const Icon(Icons.sticky_note_2_outlined),
+                  tooltip: 'Notes',
+                  onPressed: _showNotes),
             ],
           ),
           body: Column(
@@ -171,23 +191,29 @@ class _ReaderScreenState extends State<ReaderScreen> {
       itemCount: _paras.length,
       padding: const EdgeInsets.fromLTRB(18, 4, 18, 28),
       itemBuilder: (context, pIdx) {
+        final key = _paraKeys.putIfAbsent(pIdx, () => GlobalKey());
         final spans = <InlineSpan>[];
         for (final s in _paras[pIdx]) {
           final active = s.i == _c.activeSentenceIndex;
+          final hl = _hlColor[s.i];
           spans.add(TextSpan(
             text: '${s.t} ',
             recognizer: _recognizers[s.i],
             style: TextStyle(
               color: active ? cCrust : cText,
-              backgroundColor: active ? cMauve : null,
+              backgroundColor: active ? cMauve : (hl != null ? noteWash(hl) : null),
             ),
           ));
         }
         return Padding(
           padding: const EdgeInsets.only(bottom: 14),
-          child: Text.rich(
-            TextSpan(children: spans),
-            style: const TextStyle(fontSize: 18, height: 1.6),
+          child: GestureDetector(
+            onLongPressStart: (d) => _longPressSentence(pIdx, key, d.globalPosition),
+            child: Text.rich(
+              TextSpan(children: spans),
+              key: key,
+              style: const TextStyle(fontSize: 18, height: 1.6),
+            ),
           ),
         );
       },
@@ -305,6 +331,398 @@ class _ReaderScreenState extends State<ReaderScreen> {
         if (v != null) _c.setSpeed(v);
       },
     );
+  }
+
+  // --- notes ---------------------------------------------------------------
+  Future<void> _loadNotes() async {
+    final list = await _notesStore.load(_c.book.id);
+    if (!mounted) return;
+    setState(() {
+      _noteList = list;
+      _rebuildHighlights();
+    });
+  }
+
+  /// Rebuild the sentence-index → color map for the current chapter.
+  void _rebuildHighlights() {
+    _hlColor.clear();
+    final ci = _c.currentChapterIndex;
+    final maxI = (_c.currentChapter?.sentences.length ?? 0) - 1;
+    for (final n in _noteList) {
+      if (n.ch != ci || n.si < 0 || n.sj > maxI || n.si > n.sj) continue;
+      for (var i = n.si; i <= n.sj; i++) {
+        _hlColor[i] = n.color; // last write wins where notes overlap
+      }
+    }
+  }
+
+  Future<void> _persistNotes() => _notesStore.save(_c.book.id, _noteList);
+
+  /// Build the durable anchor fields for a sentence range in the current chapter.
+  Note _draftNote(int si, int sj) {
+    final sents = _c.currentChapter!.sentences;
+    si = si.clamp(0, sents.length - 1);
+    sj = sj.clamp(si, sents.length - 1);
+    final exact = [for (var i = si; i <= sj; i++) sents[i].t].join(' ');
+    final prefix = [for (var i = (si - 3).clamp(0, si); i < si; i++) sents[i].t].join(' ');
+    final suffix =
+        [for (var i = sj + 1; i <= sj + 3 && i < sents.length; i++) sents[i].t].join(' ');
+    final now = NotesStore.nowIso();
+    return Note(
+      id: _uuid.v4(),
+      kind: 'highlight',
+      ch: _c.currentChapterIndex,
+      si: si,
+      sj: sj,
+      cs: sents[si].cs,
+      ce: sents[sj].ce,
+      s: sents[si].s,
+      e: sents[sj].e,
+      exact: exact,
+      prefix: prefix.length > 32 ? prefix.substring(prefix.length - 32) : prefix,
+      suffix: suffix.length > 32 ? suffix.substring(0, 32) : suffix,
+      color: 'yellow',
+      tags: const [],
+      note: '',
+      created: now,
+      updated: now,
+    );
+  }
+
+  /// Map a long-press position to the sentence under it (via the paragraph's RenderParagraph).
+  void _longPressSentence(int pIdx, GlobalKey key, Offset globalPos) {
+    final ro = key.currentContext?.findRenderObject();
+    if (ro is! RenderParagraph) return;
+    final tp = ro.getPositionForOffset(ro.globalToLocal(globalPos));
+    var acc = 0;
+    Sentence? hit;
+    for (final s in _paras[pIdx]) {
+      acc += s.t.length + 1; // + the trailing space rendered after each sentence
+      if (tp.offset < acc) {
+        hit = s;
+        break;
+      }
+    }
+    hit ??= _paras[pIdx].isNotEmpty ? _paras[pIdx].last : null;
+    if (hit != null) _openNoteSheet(draft: _draftNote(hit.i, hit.i));
+  }
+
+  void _addNoteAtCurrent() {
+    final ch = _c.currentChapter;
+    if (ch == null || ch.sentences.isEmpty) return;
+    final si = _c.activeSentenceIndex < 0 ? 0 : _c.activeSentenceIndex;
+    _openNoteSheet(draft: _draftNote(si, si));
+  }
+
+  List<String> _parseTags(String v) => v
+      .split(RegExp(r'[,\n]+'))
+      .map((t) => t.trim().replaceFirst(RegExp('^#'), ''))
+      .where((t) => t.isNotEmpty)
+      .toList();
+
+  Future<void> _openNoteSheet({Note? existing, Note? draft}) async {
+    final base = existing ?? draft!;
+    final bodyCtrl = TextEditingController(text: base.note);
+    final tagsCtrl = TextEditingController(text: base.tags.join(', '));
+    var color = NotesStore.colors.contains(base.color) ? base.color : 'yellow';
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetCtx) => Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(sheetCtx).viewInsets.bottom),
+        child: StatefulBuilder(
+          builder: (_, setSheet) => Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(existing == null ? 'Add note' : 'Edit note',
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 10),
+                if (base.exact.isNotEmpty)
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: const BoxDecoration(
+                      color: cSurface0,
+                      border: Border(left: BorderSide(color: cMauve, width: 3)),
+                    ),
+                    child: Text(base.exact,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: cSubtext0, fontStyle: FontStyle.italic, fontSize: 13)),
+                  ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: bodyCtrl,
+                  autofocus: true,
+                  minLines: 3,
+                  maxLines: 6,
+                  decoration: const InputDecoration(
+                    hintText: 'Write your note…',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    for (final c in NotesStore.colors)
+                      GestureDetector(
+                        onTap: () => setSheet(() => color = c),
+                        child: Container(
+                          margin: const EdgeInsets.only(right: 12),
+                          width: 28,
+                          height: 28,
+                          decoration: BoxDecoration(
+                            color: noteSwatchColors[c],
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: color == c ? cText : Colors.transparent,
+                              width: 3,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: tagsCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Tags (comma-separated)',
+                    hintText: 'idea, todo',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    if (existing != null)
+                      TextButton.icon(
+                        onPressed: () {
+                          Navigator.pop(sheetCtx);
+                          _deleteNote(existing);
+                        },
+                        icon: const Icon(Icons.delete_outline, color: cRed),
+                        label: const Text('Delete', style: TextStyle(color: cRed)),
+                      ),
+                    const Spacer(),
+                    TextButton(
+                        onPressed: () => Navigator.pop(sheetCtx),
+                        child: const Text('Cancel')),
+                    const SizedBox(width: 8),
+                    FilledButton(
+                      onPressed: () {
+                        Navigator.pop(sheetCtx);
+                        _saveNote(existing, base, bodyCtrl.text, tagsCtrl.text, color);
+                      },
+                      child: const Text('Save'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    bodyCtrl.dispose();
+    tagsCtrl.dispose();
+  }
+
+  Future<void> _saveNote(
+      Note? existing, Note base, String body, String tags, String color) async {
+    final kind = body.trim().isEmpty ? 'highlight' : 'note';
+    final list = [..._noteList];
+    if (existing != null) {
+      final idx = list.indexWhere((n) => n.id == existing.id);
+      if (idx >= 0) {
+        list[idx] = existing.copyWith(
+            note: body,
+            tags: _parseTags(tags),
+            color: color,
+            kind: kind,
+            updated: NotesStore.nowIso());
+      }
+    } else {
+      list.add(base.copyWith(
+          note: body,
+          tags: _parseTags(tags),
+          color: color,
+          kind: kind,
+          updated: NotesStore.nowIso()));
+    }
+    setState(() {
+      _noteList = list;
+      _rebuildHighlights();
+    });
+    await _persistNotes();
+  }
+
+  Future<void> _deleteNote(Note note) async {
+    setState(() {
+      _noteList = _noteList.where((n) => n.id != note.id).toList();
+      _rebuildHighlights();
+    });
+    await _persistNotes();
+  }
+
+  void _jumpToNote(Note n) {
+    if (n.ch < 0 || n.ch >= _c.book.chapters.length) return;
+    if (!_c.book.chapters[n.ch].isReady) return;
+    _c.goTo(n.ch, atSeconds: n.s);
+  }
+
+  List<Note> _orderedNotes() {
+    final list = [..._noteList];
+    list.sort((a, b) => a.ch != b.ch
+        ? a.ch - b.ch
+        : (a.si != b.si ? a.si - b.si : a.s.compareTo(b.s)));
+    return list;
+  }
+
+  void _showNotes() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetCtx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.7,
+        maxChildSize: 0.95,
+        minChildSize: 0.4,
+        builder: (_, scrollCtrl) => StatefulBuilder(
+          builder: (_, setSheet) {
+            final ordered = _orderedNotes();
+            return Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+                  child: Row(
+                    children: [
+                      Text('Notes · ${ordered.length}',
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w600)),
+                      const Spacer(),
+                      PopupMenuButton<String>(
+                        icon: const Icon(Icons.ios_share),
+                        tooltip: 'Export / sync',
+                        onSelected: (v) {
+                          if (v == 'md') _exportNotes(obsidian: false);
+                          if (v == 'obsidian') _exportNotes(obsidian: true);
+                          if (v == 'sync') _syncNotes(() => setSheet(() {}));
+                        },
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(value: 'md', child: Text('Export Markdown')),
+                          PopupMenuItem(
+                              value: 'obsidian', child: Text('Export for Obsidian')),
+                          PopupMenuItem(value: 'sync', child: Text('Sync with server')),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.add, color: cMauve),
+                  title: const Text('Add note at current spot'),
+                  onTap: () {
+                    Navigator.pop(sheetCtx);
+                    _addNoteAtCurrent();
+                  },
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: ordered.isEmpty
+                      ? const Center(
+                          child: Text('No notes yet.',
+                              style: TextStyle(color: cSubtext0)))
+                      : ListView.builder(
+                          controller: scrollCtrl,
+                          itemCount: ordered.length,
+                          itemBuilder: (_, i) {
+                            final n = ordered[i];
+                            final chTitle = n.ch < _c.book.chapters.length
+                                ? _c.book.chapters[n.ch].title
+                                : 'Chapter ${n.ch + 1}';
+                            return ListTile(
+                              leading: Container(
+                                width: 12,
+                                height: 12,
+                                decoration: BoxDecoration(
+                                  color: noteSwatchColors[n.color] ?? cYellow,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              title: Text(
+                                  n.note.trim().isEmpty ? n.exact : n.note,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis),
+                              subtitle: Text(
+                                '$chTitle · ${fmtClock(Duration(milliseconds: (n.s * 1000).round()))}',
+                                style: _tiny,
+                              ),
+                              onTap: () {
+                                Navigator.pop(sheetCtx);
+                                _jumpToNote(n);
+                              },
+                              onLongPress: () {
+                                Navigator.pop(sheetCtx);
+                                _openNoteSheet(existing: n);
+                              },
+                            );
+                          },
+                        ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _exportNotes({required bool obsidian}) async {
+    if (_noteList.isEmpty) {
+      _snack('No notes to export yet.');
+      return;
+    }
+    try {
+      final f = await _notesStore.writeExport(_c.book, _noteList, obsidian: obsidian);
+      await Share.shareXFiles([XFile(f.path)], subject: '${_c.book.title} — notes');
+    } catch (e) {
+      _snack('Export failed: $e');
+    }
+  }
+
+  Future<void> _syncNotes(VoidCallback refreshSheet) async {
+    final transfer = context.read<Transfer>();
+    final url = context.read<SettingsStore>().serverUrl;
+    if (url == null || url.isEmpty) {
+      _snack('No server set — open one from the library first.');
+      return;
+    }
+    _snack('Syncing notes…');
+    try {
+      final merged = await transfer.syncNotes(url, _c.book.id, _noteList);
+      await _notesStore.save(_c.book.id, merged);
+      if (!mounted) return;
+      setState(() {
+        _noteList = merged;
+        _rebuildHighlights();
+      });
+      refreshSheet();
+      _snack('Notes synced (${merged.length} total).');
+    } catch (e) {
+      _snack('Sync failed: $e');
+    }
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   // --- outline -------------------------------------------------------------

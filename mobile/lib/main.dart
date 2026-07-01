@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import 'screens/library_screen.dart';
 import 'services/library_store.dart';
+import 'services/notes_store.dart';
 import 'services/settings_store.dart';
 import 'services/transfer.dart';
 import 'theme.dart';
@@ -31,6 +32,7 @@ class AudiobookApp extends StatelessWidget {
       providers: [
         Provider<SettingsStore>.value(value: settings),
         Provider<LibraryStore>.value(value: library),
+        Provider<NotesStore>(create: (_) => NotesStore(library)),
         Provider<Transfer>(create: (_) => Transfer(library)),
       ],
       child: MaterialApp(

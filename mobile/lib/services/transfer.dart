@@ -5,6 +5,7 @@ import 'package:flutter_archive/flutter_archive.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../models/manifest.dart';
+import '../models/note.dart';
 import 'library_store.dart';
 
 /// A book as advertised by the desktop server's `/api/library` (lightweight summary).
@@ -61,6 +62,19 @@ class Transfer {
     final books = (res.data?['books'] as List? ?? const [])
         .cast<Map<String, dynamic>>();
     return books.map(RemoteBook.fromJson).toList();
+  }
+
+  /// Push the device's notes for a book to the desktop and pull back the merged set
+  /// (server merges by id, last-write-wins on `updated`). The caller persists the result.
+  Future<List<Note>> syncNotes(
+      String serverUrl, String bookId, List<Note> local) async {
+    final res = await _dio.post<Map<String, dynamic>>(
+      '$serverUrl/api/books/$bookId/notes/sync',
+      data: {'notes': local.map((n) => n.toJson()).toList()},
+    );
+    final list = (res.data?['notes'] as List? ?? const [])
+        .cast<Map<String, dynamic>>();
+    return list.map(Note.fromJson).toList();
   }
 
   /// Download `<id>.abk` from the server and install it. `onProgress` is 0..1 across the
