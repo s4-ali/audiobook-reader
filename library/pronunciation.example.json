@@ -1,0 +1,22 @@
+// Pronunciation dictionary (OPTIONAL).
+// Copy this file to "pronunciation.json" (same folder) to enable it, then re-ingest.
+//
+// Replacements apply to the SPOKEN text only — the on-screen text, search, and
+// karaoke timings keep the original words; just the audio uses the new spelling.
+//
+// Simple form (this file): object of "written": "spoken". Keys match whole words,
+// case-insensitively, longest-first (so "GPT" never pre-empts "GPT-4").
+//
+// Power form: a JSON array of rules instead, e.g.
+//   [ { "from": "Dr\\.", "to": "Doctor", "regex": true },
+//     { "from": "naive", "to": "nigh-eve", "whole_word": true } ]
+//   ("ignore_case" defaults to true; a regex rule's "to" may use backreferences.)
+//
+// "//" and "#" full-line comments like these are stripped before parsing.
+{
+  "Kokoro": "koh koh roh",
+  "TTS": "T T S",
+  "naive": "nigh-eve",
+  "Qi": "chee",
+  "espeak": "e speak"
+}

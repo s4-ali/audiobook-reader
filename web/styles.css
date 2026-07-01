@@ -39,6 +39,38 @@
 
   --reader-font: Georgia, "Iowan Old Style", "Times New Roman", serif;
   --ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --reader-size: 20px;   /* adjustable from Display settings */
+}
+
+/* Alternate themes — override the palette tokens; role tokens (--bg/--text/--accent/…)
+   reference these via var(), so they follow automatically. --crust is "ink on the accent". */
+:root[data-theme="sepia"] {
+  --crust:    #f7f0e1;   /* ink on accent */
+  --mantle:   #ece0c4;
+  --base:     #f3e9d2;
+  --surface0: #e8dabb;
+  --surface1: #ddcca7;
+  --surface2: #cfba8d;
+  --subtext0: #6f5c41;
+  --text-c:   #3a2d1c;
+  --mauve:    #9a5a2b;
+  --mauve-60: rgba(154, 90, 43, .55);
+  --mauve-35: rgba(154, 90, 43, .30);
+  --mauve-15: rgba(154, 90, 43, .14);
+}
+:root[data-theme="light"] {
+  --crust:    #ffffff;   /* ink on accent */
+  --mantle:   #eceff4;
+  --base:     #ffffff;
+  --surface0: #f2f3f8;
+  --surface1: #e4e7ef;
+  --surface2: #d6dae6;
+  --subtext0: #6c7086;
+  --text-c:   #1e2030;
+  --mauve:    #8839ef;
+  --mauve-60: rgba(136, 57, 239, .55);
+  --mauve-35: rgba(136, 57, 239, .30);
+  --mauve-15: rgba(136, 57, 239, .12);
 }
 
 * { box-sizing: border-box; }
@@ -62,6 +94,30 @@ body {
 .brand { font-weight: 700; letter-spacing: .2px; }
 .spacer { flex: 1; }
 .book-meta { color: var(--muted); font-size: 13px; text-align: right; }
+
+/* Display-settings popover (theme + text size) */
+.display-wrap { position: relative; display: flex; }
+.display-menu {
+  position: absolute; right: 0; top: calc(100% + 8px); z-index: 70; width: 240px;
+  background: var(--surface2); border-radius: var(--r-md); padding: 12px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.dm-row { display: flex; align-items: center; gap: 8px; }
+.dm-themes { justify-content: space-between; }
+.dm-theme {
+  flex: 1; background: var(--surface1); color: var(--text);
+  border: 2px solid transparent; border-radius: var(--r-md);
+  padding: 8px 6px; font-size: 12px; cursor: pointer;
+}
+.dm-theme:hover { background: var(--surface0); }
+.dm-theme.active { border-color: var(--accent); }
+.dm-font { justify-content: space-between; font-size: 12px; color: var(--muted); }
+.dm-step {
+  background: var(--surface1); color: var(--text); border: none; border-radius: var(--r-md);
+  padding: 6px 10px; font-size: 13px; cursor: pointer; min-width: 36px;
+}
+.dm-step:hover { background: var(--surface0); }
+.dm-val { font-variant-numeric: tabular-nums; min-width: 46px; text-align: center; color: var(--text); }
 
 button { font-family: inherit; cursor: pointer; }
 .icon-btn {
@@ -114,6 +170,13 @@ button { font-family: inherit; cursor: pointer; }
 }
 .book-card .pkg:hover { color: var(--accent); }
 .book-card:hover .pkg { opacity: 1; }
+.book-card .rss {
+  position: absolute; top: 10px; right: 78px; opacity: 0;
+  background: rgba(17,17,27,.55); border-radius: var(--r-sm); padding: 2px 7px;
+  font-size: 13px; border: none; color: var(--muted); line-height: 1.4; cursor: pointer;
+}
+.book-card .rss:hover { color: var(--accent); }
+.book-card:hover .rss { opacity: 1; }
 .book-card .badge {
   position: absolute; top: 10px; left: 10px; z-index: 1;
   background: var(--accent); color: var(--crust); border-radius: var(--r-full);
@@ -179,6 +242,27 @@ code { background: var(--surface1); padding: 1px 6px; border-radius: var(--r-sm)
 .search-results .res mark { background: var(--mauve-35); color: var(--text); border-radius: var(--r-sm); }
 .search-results .none { padding: 14px; color: var(--muted); font-size: 13px; }
 
+/* Export menu (transcript / subtitles) */
+.export-wrap { padding: 0 14px 6px; }
+.export-btn {
+  width: 100%; background: var(--surface1); color: var(--text); border: none;
+  border-radius: var(--r-md); padding: 8px 10px; font-size: 12px; cursor: pointer; text-align: left;
+}
+.export-btn:hover { background: var(--surface2); }
+.export-menu {
+  margin-top: 6px; background: var(--surface2); border-radius: var(--r-md);
+  padding: 5px; display: flex; flex-direction: column;
+}
+.export-menu a {
+  color: var(--text); text-decoration: none; font-size: 12px;
+  padding: 7px 9px; border-radius: var(--r-sm);
+}
+.export-menu a:hover { background: var(--surface1); }
+.export-menu .em-sep {
+  color: var(--muted); font-size: 10px; text-transform: uppercase;
+  letter-spacing: .4px; padding: 7px 9px 3px;
+}
+
 .gen-banner {
   margin: 10px 14px; padding: 9px 11px; border-radius: var(--r-md); font-size: 12px;
   background: var(--mauve-15); border: none; color: var(--text);
@@ -199,6 +283,27 @@ code { background: var(--surface1); padding: 1px 6px; border-radius: var(--r-sm)
   border: 2px solid var(--mauve-35); border-top-color: var(--accent); animation: spin .8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Bookmarks panel (sidebar) */
+.bookmarks { margin: 2px 10px 6px; max-height: 30%; overflow-y: auto; flex: 0 0 auto; }
+.bookmarks .bm-head {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted);
+  padding: 6px 4px 4px; position: sticky; top: 0; background: var(--surface0);
+}
+.bookmarks .bm {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 8px; border-radius: var(--r-md); cursor: pointer;
+}
+.bookmarks .bm:hover { background: var(--surface1); }
+.bookmarks .bm-main { flex: 1; min-width: 0; }
+.bookmarks .bm-loc { font-size: 11px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bookmarks .bm-snip { font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bookmarks .bm-del {
+  flex: 0 0 auto; background: transparent; border: none; color: var(--muted);
+  cursor: pointer; font-size: 12px; border-radius: var(--r-sm); padding: 2px 6px; opacity: 0;
+}
+.bookmarks .bm:hover .bm-del { opacity: 1; }
+.bookmarks .bm-del:hover { color: var(--red); }
 
 .outline { overflow-y: auto; flex: 1; padding: 8px 0; }
 .outline .ch.pending, .outline .topic.pending { opacity: .55; cursor: default; }
@@ -226,7 +331,7 @@ code { background: var(--surface1); padding: 1px 6px; border-radius: var(--r-sm)
 .chapter-header .sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
 .reader {
   padding: 10px 8% 140px; max-width: 820px; margin: 0 auto;
-  font-family: var(--reader-font); font-size: 20px; line-height: 1.75;
+  font-family: var(--reader-font); font-size: var(--reader-size, 20px); line-height: 1.75;
 }
 .reader p { margin: 0 0 1.1em; }
 .sent { cursor: pointer; border-radius: var(--r-sm); padding: 0 1px; transition: background .1s; }
@@ -252,6 +357,8 @@ code { background: var(--surface1); padding: 1px 6px; border-radius: var(--r-sm)
 .time { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 38px; }
 .extras { display: flex; align-items: center; gap: 16px; }
 .rate { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.sleep { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.sleep-left { color: var(--accent); font-variant-numeric: tabular-nums; min-width: 36px; text-align: right; }
 .vol { display: flex; align-items: center; gap: 6px; }
 select {
   background: var(--surface1); color: var(--text); border: none;
@@ -285,10 +392,26 @@ input[type=range]::-webkit-slider-thumb {
 .row .field { flex: 1; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
 .hint { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 16px 0 0; }
+.health-warn {
+  background: var(--surface1); color: var(--text); border-left: 3px solid var(--yellow);
+  border-radius: var(--r-md); padding: 9px 11px; font-size: 12px; line-height: 1.5; margin-bottom: 14px;
+}
 .ingest-progress { margin: 6px 0 14px; }
 .bar { height: 10px; background: var(--base); border-radius: var(--r-full); overflow: hidden; }
 .bar-fill { height: 100%; width: 0; background: var(--accent); transition: width .25s; }
 .ingest-msg { font-size: 12px; color: var(--muted); margin-top: 8px; min-height: 16px; }
+
+/* Keyboard-shortcuts overlay */
+.shortcuts-grid {
+  display: grid; grid-template-columns: auto 1fr; gap: 11px 16px;
+  align-items: center; margin: 4px 0 10px;
+}
+.shortcuts-grid kbd {
+  justify-self: start; background: var(--surface1); color: var(--text);
+  border-radius: var(--r-sm); padding: 3px 8px; font-family: var(--ui-font);
+  font-size: 12px; white-space: nowrap; min-width: 56px; text-align: center;
+}
+.shortcuts-grid span { color: var(--text); font-size: 13px; }
 
 .toast {
   position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%);

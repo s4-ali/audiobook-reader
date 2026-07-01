@@ -7,8 +7,8 @@ import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
@@ -61,6 +61,13 @@ def api_voices():
     return {"voices": VOICES, "default": config.DEFAULT_VOICE}
 
 
+@app.get("/api/health")
+def api_health():
+    """Diagnostics: tool/engine availability, effective audio format, library + config."""
+    from . import health
+    return health.health_report()
+
+
 @app.get("/api/books/{book_id}/manifest")
 def api_manifest(book_id: str):
     m = library.get_manifest(book_id)
@@ -107,6 +114,72 @@ def api_package(book_id: str):
         path, media_type="application/zip", filename=f"{book_id}.abk",
         background=BackgroundTask(shutil.rmtree, tmpdir, True),  # (path, ignore_errors)
     )
+
+
+def _manifest_or_404(book_id: str) -> dict:
+    m = library.get_manifest(book_id)
+    if not m:
+        raise HTTPException(404, "Book not found")
+    return m
+
+
+def _subtitle_response(book_id: str, ci: Optional[int], ext: str):
+    """Serve .srt/.vtt for one chapter (times relative to its audio) or the whole book."""
+    ext = ext.lower()
+    if ext not in ("srt", "vtt"):
+        raise HTTPException(404, "Subtitles are available as .srt or .vtt")
+    m = _manifest_or_404(book_id)
+    from . import subtitles
+    chapters = m.get("chapters", [])
+    if ci is not None:
+        if ci < 0 or ci >= len(chapters):
+            raise HTTPException(404, "Chapter not found")
+        if chapters[ci].get("status", "ready") != "ready":
+            raise HTTPException(409, "That chapter isn't ready yet")
+        cues = subtitles.build_cues(m, chapter_index=ci)
+        stem = f"{book_id}-ch{ci + 1:02d}"
+    else:
+        cues = subtitles.build_cues(m)
+        stem = book_id
+    if not cues:
+        raise HTTPException(409, "No timed text available yet")
+    body = subtitles.to_vtt(cues) if ext == "vtt" else subtitles.to_srt(cues)
+    media = "text/vtt" if ext == "vtt" else "application/x-subrip"
+    return Response(body, media_type=f"{media}; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{stem}.{ext}"'})
+
+
+@app.get("/api/books/{book_id}/transcript.txt")
+def api_transcript(book_id: str):
+    from . import subtitles
+    body = subtitles.to_transcript(_manifest_or_404(book_id))
+    return Response(body, media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{book_id}.txt"'})
+
+
+@app.get("/api/books/{book_id}/subtitles.{ext}")
+def api_subtitles_book(book_id: str, ext: str):
+    return _subtitle_response(book_id, None, ext)
+
+
+@app.get("/api/books/{book_id}/chapter/{ci}/subtitles.{ext}")
+def api_subtitles_chapter(book_id: str, ci: int, ext: str):
+    return _subtitle_response(book_id, ci, ext)
+
+
+@app.get("/api/books/{book_id}/feed.xml")
+def api_feed(book_id: str, request: Request):
+    """Podcast RSS feed (chapters = serial episodes) — subscribe in any podcast app."""
+    m = _manifest_or_404(book_id)
+    from . import feed
+    xml = feed.build_feed(m, str(request.base_url), book_id)
+    return Response(xml, media_type="application/rss+xml; charset=utf-8")
+
+
+@app.get("/api/books/{book_id}/cover.png")
+def api_cover(book_id: str):
+    from . import feed
+    return Response(feed.cover_png(_manifest_or_404(book_id)), media_type="image/png")
 
 
 def _run_job(job_id: str, pdf_path: Path, opts: dict, resume: bool, control: JobControl):

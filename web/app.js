@@ -61,9 +61,11 @@ async function loadLibrary() {
     const pkg = ready
       ? `<a class="pkg" href="/api/books/${b.id}/package" download title="Download .abk package for the phone app">⤓</a>`
       : "";
+    const rss = ready ? `<button class="rss" title="Copy podcast RSS feed URL">🎙</button>` : "";
     card.innerHTML = `
       <button class="del" title="Delete">🗑</button>
       ${pkg}
+      ${rss}
       ${badge}
       <div class="cover">📖</div>
       <h3>${escapeHtml(b.title || b.id)}</h3>
@@ -74,10 +76,22 @@ async function loadLibrary() {
     card.addEventListener("click", () => openBook(b.id));
     const pkgEl = card.querySelector(".pkg");
     if (pkgEl) pkgEl.addEventListener("click", (e) => e.stopPropagation());  // download, don't open
+    const rssEl = card.querySelector(".rss");
+    if (rssEl) rssEl.addEventListener("click", (e) => {
+      e.stopPropagation();   // copy the feed URL, don't open the book
+      const url = `${location.origin}/api/books/${b.id}/feed.xml`;
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(url)
+          .then(() => toast("🎙 Podcast feed URL copied — paste it into your podcast app."))
+          .catch(() => toast(url));
+      } else { toast(url); }
+    });
     card.querySelector(".del").addEventListener("click", async (e) => {
       e.stopPropagation();
       if (confirm(`Delete "${b.title}" and its audio?`)) {
         await fetch(`/api/books/${b.id}`, { method: "DELETE" });
+        localStorage.removeItem(`abk:pos:${b.id}`);   // drop saved position + bookmarks too
+        localStorage.removeItem(`abk:bm:${b.id}`);
         loadLibrary();
       }
     });
@@ -132,6 +146,7 @@ function renderContinue() {
 
 function showLibrary() {
   stopGenPoll();
+  resetSleep();       // disarm any running sleep timer when leaving the reader
   savePos();          // capture the exact spot before clearing reader state (the async
   audio.pause();      // 'pause' handler would otherwise run after bookId is nulled)
   state.bookId = null; state.manifest = null; state.waitingForNext = null; state.genstate = null;
@@ -168,6 +183,7 @@ async function openBook(bookId, opts = {}) {
   updateBookMeta();
   buildSearchIndex();
   renderOutline();
+  renderBookmarks();
   clearSearch();
   updateGenBanner();
 
@@ -360,6 +376,7 @@ function loadChapter(ci, seekTime = 0, autoplay = false) {
     `<h2>${escapeHtml(ch.title)}</h2><div class="sub">Chapter ${ci + 1} of ${chapters.length} · ${fmtTime(ch.duration)}</div>`;
   $("#content").scrollTop = 0;
   savePos();
+  updateMediaSessionMetadata();
 }
 
 function renderChapterText(ch) {
@@ -422,7 +439,7 @@ audio.addEventListener("timeupdate", () => {
     $("#curTime").textContent = fmtTime(t);
   }
   setActiveSentence(findActiveIndex(t));
-  if (++saveTick % 12 === 0) savePos();
+  if (++saveTick % 12 === 0) { savePos(); updateMediaPosition(); }
 });
 
 audio.addEventListener("loadedmetadata", () => {
@@ -440,6 +457,11 @@ audio.addEventListener("play", () => { $("#playBtn").textContent = "❚❚"; });
 audio.addEventListener("pause", () => { $("#playBtn").textContent = "▶"; savePos(); });
 audio.addEventListener("ended", () => {
   savePos();
+  if (sleepTimer.endOfChapter) {
+    resetSleep();
+    toast("😴 End of chapter — paused.");
+    return;                       // sleep armed for chapter-end: stop instead of advancing
+  }
   const next = state.ci + 1;
   if (next >= state.manifest.chapters.length) return;
   if (isReady(state.manifest.chapters[next])) {
@@ -485,6 +507,62 @@ $("#rateSelect").addEventListener("change", (e) => {
 $("#volBar").addEventListener("input", (e) => {
   audio.volume = Number(e.target.value);
   localStorage.setItem("abk:vol", e.target.value);
+  // If a sleep countdown is running, treat the new level as the volume to fade from.
+  if (sleepTimer.deadline) sleepTimer.baseVol = Number(e.target.value);
+});
+
+/* --------------------------------------------------------------- sleep timer */
+// Pause playback after a chosen delay (or at the end of the current chapter). The last
+// few seconds fade the volume down so it doesn't cut off abruptly. Session-only — a
+// fresh book or a return to the library disarms it. Counts real time, like Audible.
+const sleepTimer = { deadline: 0, endOfChapter: false, ticker: null, baseVol: 1 };
+const sleepSelect = $("#sleepSelect");
+const sleepLeft = $("#sleepLeft");
+const SLEEP_FADE_MS = 5000;
+
+function disarmSleep() {
+  if (sleepTimer.ticker) { clearInterval(sleepTimer.ticker); sleepTimer.ticker = null; }
+  // Undo a fade in progress so the next play isn't unexpectedly quiet.
+  if (sleepTimer.deadline && audio.volume < sleepTimer.baseVol) audio.volume = sleepTimer.baseVol;
+  sleepTimer.deadline = 0;
+  sleepTimer.endOfChapter = false;
+  sleepLeft.hidden = true;
+  sleepLeft.textContent = "";
+}
+// Disarm and snap the menu back to "Off" (e.g. on book switch or after firing).
+function resetSleep() { disarmSleep(); sleepSelect.value = "0"; }
+
+function tickSleep() {
+  const ms = sleepTimer.deadline - Date.now();
+  if (ms <= 0) { fireSleep(); return; }
+  if (ms < SLEEP_FADE_MS && !audio.paused) audio.volume = Math.max(0, sleepTimer.baseVol * (ms / SLEEP_FADE_MS));
+  sleepLeft.textContent = fmtTime(ms / 1000);
+}
+
+function fireSleep() {
+  const base = sleepTimer.baseVol;
+  disarmSleep();
+  audio.pause();
+  audio.volume = base;          // restore so the next play is at full volume
+  $("#volBar").value = base;
+  sleepSelect.value = "0";
+  toast("😴 Sleep timer reached — paused.");
+}
+
+sleepSelect.addEventListener("change", (e) => {
+  const v = e.target.value;
+  disarmSleep();
+  if (v === "0") return;
+  if (v === "chapter") {
+    sleepTimer.endOfChapter = true;
+    toast("😴 Will pause at the end of this chapter.");
+    return;
+  }
+  sleepTimer.baseVol = audio.volume;
+  sleepTimer.deadline = Date.now() + Number(v) * 60000;
+  sleepLeft.hidden = false;
+  tickSleep();
+  sleepTimer.ticker = setInterval(tickSleep, 1000);
 });
 
 /* ------------------------------------------------------------------ search */
@@ -568,17 +646,235 @@ function loadPos(bookId) {
 window.addEventListener("beforeunload", savePos);
 document.addEventListener("visibilitychange", () => { if (document.hidden) savePos(); });
 
+/* --------------------------------------------------------------- bookmarks */
+// Per-book bookmarks in localStorage as [{ ci, t, ch, snip, created }] — the chapter index,
+// in-chapter seconds, chapter title, and the sentence at that spot for a readable label.
+function bmKey(id) { return `abk:bm:${id}`; }
+function loadBookmarks(id) {
+  try { return JSON.parse(localStorage.getItem(bmKey(id))) || []; } catch { return []; }
+}
+function saveBookmarks(id, list) { localStorage.setItem(bmKey(id), JSON.stringify(list)); }
+
+function addBookmark() {
+  if (!state.bookId || state.ci < 0 || !state.manifest) return;
+  const t = audio.currentTime || pendingSeek || 0;
+  const ch = state.manifest.chapters[state.ci];
+  let si = state.activeSi < 0 ? findActiveIndex(t) : state.activeSi;
+  const snip = (state.sentences[si] || {}).t || "";
+  const list = loadBookmarks(state.bookId);
+  list.push({ ci: state.ci, t, ch: ch.title, snip, created: Date.now() });
+  list.sort((a, b) => (a.ci - b.ci) || (a.t - b.t));   // keep in reading order
+  saveBookmarks(state.bookId, list);
+  renderBookmarks();
+  toast("🔖 Bookmark added.");
+}
+
+function renderBookmarks() {
+  const panel = $("#bookmarksPanel");
+  const list = state.bookId ? loadBookmarks(state.bookId) : [];
+  if (!list.length) { panel.hidden = true; panel.innerHTML = ""; return; }
+  panel.hidden = false;
+  panel.innerHTML = `<div class="bm-head">🔖 Bookmarks · ${list.length}</div>` +
+    list.map((b, i) => `
+      <div class="bm" data-idx="${i}">
+        <div class="bm-main">
+          <div class="bm-loc">${escapeHtml(b.ch || "")} · ${fmtTime(b.t)}</div>
+          ${b.snip ? `<div class="bm-snip">${escapeHtml(b.snip)}</div>` : ""}
+        </div>
+        <button class="bm-del" title="Remove bookmark">✕</button>
+      </div>`).join("");
+  $$(".bm", panel).forEach((el) => {
+    const i = Number(el.dataset.idx);
+    el.addEventListener("click", () => {
+      const b = loadBookmarks(state.bookId)[i];
+      if (b) loadChapter(b.ci, b.t, true);
+    });
+    el.querySelector(".bm-del").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const arr = loadBookmarks(state.bookId);
+      arr.splice(i, 1);
+      saveBookmarks(state.bookId, arr);
+      renderBookmarks();
+    });
+  });
+}
+$("#bookmarkBtn").addEventListener("click", addBookmark);
+
+/* ----------------------------------------------------- OS media controls */
+// Wire the page into the OS media session: lock-screen / notification controls, hardware
+// media keys, Bluetooth & car controls, and a system scrubber — all feature-detected so
+// browsers without the API are unaffected.
+const hasMediaSession = "mediaSession" in navigator;
+
+function setupMediaSession() {
+  if (!hasMediaSession) return;
+  const ms = navigator.mediaSession;
+  const set = (action, fn) => { try { ms.setActionHandler(action, fn); } catch (e) { /* unsupported action */ } };
+  set("play", () => audio.play().catch(() => {}));
+  set("pause", () => audio.pause());
+  set("stop", () => audio.pause());
+  set("seekbackward", (d) => seekTo(Math.max(0, audio.currentTime - (d.seekOffset || 10))));
+  set("seekforward", (d) => seekTo(audio.currentTime + (d.seekOffset || 10)));
+  set("previoustrack", () => loadChapter(state.ci - 1, 0, true));
+  set("nexttrack", () => loadChapter(state.ci + 1, 0, true));
+  set("seekto", (d) => {
+    if (d.seekTime == null) return;
+    if (d.fastSeek && audio.fastSeek) audio.fastSeek(d.seekTime);
+    else audio.currentTime = d.seekTime;
+    updateMediaPosition();
+  });
+}
+
+function updateMediaPosition() {
+  if (!hasMediaSession || !navigator.mediaSession.setPositionState) return;
+  const d = audio.duration;
+  if (!isFinite(d) || d <= 0) return;
+  try {
+    navigator.mediaSession.setPositionState({
+      duration: d,
+      playbackRate: audio.playbackRate || 1,
+      position: Math.min(Math.max(0, audio.currentTime), d),
+    });
+  } catch (e) { /* invalid values mid-load — ignore */ }
+}
+
+// A small generated cover so the lock screen isn't blank: accent band + wrapped title + author.
+function bookArtwork(m) {
+  if (state.artworkFor === state.bookId && state.artworkUrl)
+    return [{ src: state.artworkUrl, sizes: "512x512", type: "image/png" }];
+  try {
+    const c = document.createElement("canvas");
+    c.width = c.height = 512;
+    const x = c.getContext("2d");
+    x.fillStyle = "#1e1e2e"; x.fillRect(0, 0, 512, 512);
+    x.fillStyle = "#cba6f7"; x.fillRect(0, 0, 512, 96);
+    x.fillStyle = "#cdd6f4"; x.textBaseline = "top";
+    x.font = "bold 44px Georgia, serif";
+    let y = 150;
+    for (const line of wrapLines(x, m.title || "", 432, 5)) { x.fillText(line, 40, y); y += 56; }
+    x.fillStyle = "#a6adc8"; x.font = "26px sans-serif";
+    x.fillText((m.author || "").slice(0, 48), 40, 452);
+    state.artworkUrl = c.toDataURL("image/png");
+    state.artworkFor = state.bookId;
+    return [{ src: state.artworkUrl, sizes: "512x512", type: "image/png" }];
+  } catch (e) { return []; }
+}
+function wrapLines(ctx, text, maxW, maxLines) {
+  const words = String(text).split(/\s+/).filter(Boolean);
+  const lines = []; let line = "";
+  for (const w of words) {
+    const test = line ? line + " " + w : w;
+    if (ctx.measureText(test).width > maxW && line) {
+      lines.push(line); line = w;
+      if (lines.length === maxLines - 1) break;
+    } else line = test;
+  }
+  if (line && lines.length < maxLines) lines.push(line);
+  return lines.length ? lines : [""];
+}
+
+function updateMediaSessionMetadata() {
+  if (!hasMediaSession || !window.MediaMetadata) return;
+  const m = state.manifest;
+  if (!m || state.ci < 0) return;
+  const ch = m.chapters[state.ci];
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: ch ? ch.title : m.title,
+      artist: m.author || "Audiobook",
+      album: m.title || "",
+      artwork: bookArtwork(m),
+    });
+  } catch (e) { /* ignore */ }
+}
+
+if (hasMediaSession) {
+  audio.addEventListener("play", () => { navigator.mediaSession.playbackState = "playing"; updateMediaPosition(); });
+  audio.addEventListener("pause", () => { navigator.mediaSession.playbackState = "paused"; });
+  audio.addEventListener("loadedmetadata", updateMediaPosition);
+  audio.addEventListener("ratechange", updateMediaPosition);
+}
+
+/* ------------------------------------------------------ display settings */
+// Reading comfort: theme (dark/sepia/light, via a data-theme palette swap) and reader font
+// size (a --reader-size CSS var). Both persist in localStorage and apply on load.
+const THEMES = ["dark", "sepia", "light"];
+const FONT_MIN = 15, FONT_MAX = 32;
+let fontPx = 20;
+
+function applyTheme(t) {
+  if (!THEMES.includes(t)) t = "dark";
+  document.documentElement.setAttribute("data-theme", t);
+  localStorage.setItem("abk:theme", t);
+  $$(".dm-theme").forEach((b) => b.classList.toggle("active", b.dataset.theme === t));
+}
+function applyFont(px) {
+  px = Math.max(FONT_MIN, Math.min(FONT_MAX, Math.round(px)));
+  fontPx = px;
+  document.documentElement.style.setProperty("--reader-size", px + "px");
+  localStorage.setItem("abk:reader-size", String(px));
+  $("#fontVal").textContent = Math.round((px / 20) * 100) + "%";
+}
+
+$("#displayBtn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  $("#displayMenu").hidden = !$("#displayMenu").hidden;
+});
+$$(".dm-theme").forEach((b) => b.addEventListener("click", () => applyTheme(b.dataset.theme)));
+$("#fontUp").addEventListener("click", () => applyFont(fontPx + 2));
+$("#fontDown").addEventListener("click", () => applyFont(fontPx - 2));
+// Click anywhere outside the popover closes it.
+document.addEventListener("click", (e) => {
+  const menu = $("#displayMenu");
+  if (!menu.hidden && !e.target.closest(".display-wrap")) menu.hidden = true;
+});
+
+/* --------------------------------------------------------------- export menu */
+// Download a transcript (.txt) or synced subtitles (.srt/.vtt) — whole book or the
+// current chapter — built server-side from the manifest's per-sentence timings.
+function buildExportMenu() {
+  const menu = $("#exportMenu");
+  const id = state.bookId;
+  if (!id) { menu.innerHTML = ""; return; }
+  const rows = [
+    `<div class="em-sep">Whole book</div>`,
+    `<a download href="/api/books/${id}/transcript.txt">📄 Transcript (.txt)</a>`,
+    `<a download href="/api/books/${id}/subtitles.vtt">💬 Subtitles (.vtt)</a>`,
+    `<a download href="/api/books/${id}/subtitles.srt">💬 Subtitles (.srt)</a>`,
+  ];
+  if (state.ci >= 0 && state.manifest && isReady(state.manifest.chapters[state.ci])) {
+    rows.push(`<div class="em-sep">This chapter</div>`,
+      `<a download href="/api/books/${id}/chapter/${state.ci}/subtitles.vtt">💬 Chapter (.vtt)</a>`,
+      `<a download href="/api/books/${id}/chapter/${state.ci}/subtitles.srt">💬 Chapter (.srt)</a>`);
+  }
+  menu.innerHTML = rows.join("");
+}
+$("#exportBtn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const menu = $("#exportMenu");
+  if (menu.hidden) { buildExportMenu(); menu.hidden = false; } else menu.hidden = true;
+});
+$("#exportMenu").addEventListener("click", (e) => { if (e.target.closest("a")) $("#exportMenu").hidden = true; });
+document.addEventListener("click", (e) => {
+  const menu = $("#exportMenu");
+  if (!menu.hidden && !e.target.closest(".export-wrap")) menu.hidden = true;
+});
+
 /* --------------------------------------------------------------- keyboard */
 document.addEventListener("keydown", (e) => {
   const tag = (e.target.tagName || "").toLowerCase();
   const typing = tag === "input" || tag === "textarea" || tag === "select";
   if (e.key === "Escape") {
+    if (!$("#displayMenu").hidden) { $("#displayMenu").hidden = true; return; }
+    if (!$("#exportMenu").hidden) { $("#exportMenu").hidden = true; return; }
+    if (!$("#shortcutsModal").hidden) { closeShortcuts(); return; }
     if ($("#modal").hidden === false) closeModal();
     else if ($("#searchInput").value) clearSearch();
     else if (!$("#readerView").hidden) showLibrary();
     return;
   }
   if (e.key === "/" && !typing) { e.preventDefault(); $("#searchInput").focus(); return; }
+  if (e.key === "?" && !typing) { e.preventDefault(); openShortcuts(); return; }
   if (typing || $("#readerView").hidden) return;
   switch (e.key) {
     case " ": e.preventDefault(); audio.paused ? audio.play() : audio.pause(); break;
@@ -588,6 +884,7 @@ document.addEventListener("keydown", (e) => {
     case "ArrowDown": e.preventDefault(); jumpSentence(1); break;
     case "[": loadChapter(state.ci - 1, 0, true); break;
     case "]": loadChapter(state.ci + 1, 0, true); break;
+    case "b": case "B": addBookmark(); break;
   }
 });
 function jumpSentence(dir) {
@@ -597,7 +894,21 @@ function jumpSentence(dir) {
 }
 
 /* ----------------------------------------------------------- add-book modal */
+// Show any setup warnings (missing ffmpeg/kokoro/espeak) from /api/health, right where
+// the user is about to generate — so a WAV-fallback or dummy-only situation isn't a surprise.
+async function loadHealthWarnings() {
+  const el = $("#healthWarn");
+  try {
+    const h = await api("/api/health");
+    if (h.warnings && h.warnings.length) {
+      el.innerHTML = h.warnings.map((w) => "⚠ " + escapeHtml(w)).join("<br>");
+      el.hidden = false;
+    } else { el.hidden = true; }
+  } catch { el.hidden = true; }
+}
+
 async function openModal() {
+  loadHealthWarnings();
   const sel = $("#voiceSelect");
   if (!sel.options.length) {
     try {
@@ -617,6 +928,15 @@ function closeModal() {
 }
 $("#addBookBtn").addEventListener("click", openModal);
 $("#cancelModal").addEventListener("click", closeModal);
+
+/* ---------------------------------------------------------- shortcuts help */
+function openShortcuts() { $("#shortcutsModal").hidden = false; }
+function closeShortcuts() { $("#shortcutsModal").hidden = true; }
+$("#helpBtn").addEventListener("click", openShortcuts);
+$("#closeShortcuts").addEventListener("click", closeShortcuts);
+$("#shortcutsModal").addEventListener("click", (e) => {
+  if (e.target.id === "shortcutsModal") closeShortcuts();   // click the backdrop to dismiss
+});
 
 $("#ingestForm").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -697,5 +1017,8 @@ window.addEventListener("drop", (e) => {
   if (rate) { $("#rateSelect").value = rate; audio.playbackRate = Number(rate); }
   const vol = localStorage.getItem("abk:vol");
   if (vol !== null) { $("#volBar").value = vol; audio.volume = Number(vol); }
+  applyTheme(localStorage.getItem("abk:theme") || "dark");
+  applyFont(Number(localStorage.getItem("abk:reader-size")) || 20);
+  setupMediaSession();
   showLibrary();
 })();

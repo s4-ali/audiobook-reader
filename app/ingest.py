@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from . import audio as audiomod
-from . import config, extract as book_extract, textproc
+from . import config, extract as book_extract, pronounce, textproc
 from .extract import BookDoc, Marker
 from .tts import make_engine
 
@@ -187,7 +187,8 @@ def _time_at_char(timings: List[dict], char_off: int) -> float:
 
 def _render_chapter(engine, ch: Chapter, sr: int,
                     on_sentence: Optional[Callable[[], None]] = None,
-                    control: Optional[JobControl] = None):
+                    control: Optional[JobControl] = None,
+                    pron_rules: Optional[list] = None):
     sents = textproc.split_sentences(ch.text)
     parts: List = []
     timings: List[dict] = []
@@ -195,7 +196,9 @@ def _render_chapter(engine, ch: Chapter, sr: int,
     for k, sent in enumerate(sents):
         if control is not None:
             control.checkpoint()  # blocks while paused, raises if cancelled
-        pcm = engine.synth(sent.text)
+        # Synthesize the spoken form (pronunciation rules applied); the manifest below
+        # keeps sent.text — the original words — so highlighting and search still match.
+        pcm = engine.synth(pronounce.apply(sent.text, pron_rules))
         dur = audiomod.duration_seconds(pcm, sr)
         start = t
         end = t + dur
@@ -330,7 +333,11 @@ def ingest_pdf(pdf_path: str | Path, *, engine_name: str = None, voice: str = No
     else:
         manifest = _skeleton(book_id, doc, chapters, eng_info, fmt, sr, voice, lang, speed)
     manifest["source_pdf"] = pdf_path.name
+    pron_rules = pronounce.load_rules()
+    manifest["pronunciation_rules"] = len(pron_rules)
     _write_manifest_atomic(book_dir, manifest)
+    if pron_rules:
+        report("model", message=f"Pronunciation dictionary: {len(pron_rules)} rule(s) loaded")
 
     total_sents = sum(len(textproc.split_sentences(ch.text)) for ch in chapters)
 
@@ -370,7 +377,8 @@ def ingest_pdf(pdf_path: str | Path, *, engine_name: str = None, voice: str = No
 
             try:
                 pcm, timings, topics = _render_chapter(engine, ch, sr,
-                                                       on_sentence=_tick, control=control)
+                                                       on_sentence=_tick, control=control,
+                                                       pron_rules=pron_rules)
                 out_path = audiomod.write_audio(pcm, book_dir / ch.id, sr=sr, fmt=fmt)
             except GenerationCancelled:
                 raise

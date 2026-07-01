@@ -28,6 +28,13 @@ MP3_QUALITY = os.environ.get("MP3_QUALITY", "4")         # libmp3lame -q:a (0=be
 SENTENCE_GAP_MS = int(os.environ.get("SENTENCE_GAP_MS", "90"))
 PARAGRAPH_GAP_MS = int(os.environ.get("PARAGRAPH_GAP_MS", "320"))
 
+# --- Pronunciation dictionary ------------------------------------------------
+# Optional JSON map of spoken-form replacements applied just before TTS (audio only;
+# on-screen text, search and timings keep the original words). Absent by default = no-op.
+# See app/pronounce.py and library/pronunciation.example.json for the format.
+PRONUNCIATION_FILE = Path(os.environ.get(
+    "PRONUNCIATION_FILE", LIBRARY_DIR / "pronunciation.json")).resolve()
+
 # --- Chapter segmentation ----------------------------------------------------
 # When a PDF has no usable table of contents we split into ~this many words/chapter.
 WORDS_PER_FALLBACK_CHAPTER = int(os.environ.get("WORDS_PER_FALLBACK_CHAPTER", "1400"))

@@ -12,6 +12,23 @@
     <button id="backBtn" class="icon-btn" title="Library (Esc)" hidden>← Library</button>
     <div class="brand">🎧 Audiobook Reader</div>
     <div class="spacer"></div>
+    <button id="helpBtn" class="icon-btn" title="Keyboard shortcuts (?)">⌨</button>
+    <div class="display-wrap">
+      <button id="displayBtn" class="icon-btn" title="Display settings — text size & theme">Aa</button>
+      <div id="displayMenu" class="display-menu" hidden>
+        <div class="dm-row dm-themes">
+          <button class="dm-theme" data-theme="dark">Dark</button>
+          <button class="dm-theme" data-theme="sepia">Sepia</button>
+          <button class="dm-theme" data-theme="light">Light</button>
+        </div>
+        <div class="dm-row dm-font">
+          <span>Text size</span>
+          <button id="fontDown" class="dm-step" title="Smaller text">A−</button>
+          <span id="fontVal" class="dm-val">100%</span>
+          <button id="fontUp" class="dm-step" title="Larger text">A+</button>
+        </div>
+      </div>
+    </div>
     <div id="bookMeta" class="book-meta"></div>
   </header>
 
@@ -37,7 +54,12 @@
         <button id="searchClear" class="icon-btn" title="Clear">✕</button>
       </div>
       <div id="searchResults" class="search-results" hidden></div>
+      <div class="export-wrap">
+        <button id="exportBtn" class="export-btn" title="Download transcript & subtitles">⤓ Transcript / subtitles</button>
+        <div id="exportMenu" class="export-menu" hidden></div>
+      </div>
       <div id="genBanner" class="gen-banner" hidden></div>
+      <div id="bookmarksPanel" class="bookmarks" hidden></div>
       <nav id="outline" class="outline"></nav>
     </aside>
     <main id="content">
@@ -58,6 +80,7 @@
       <button id="playBtn" class="play-btn" title="Play/Pause (Space)">▶</button>
       <button id="fwd10Btn" class="icon-btn" title="Forward 10s (→)">10↻</button>
       <button id="nextChBtn" class="icon-btn" title="Next chapter ( ] )">⏭</button>
+      <button id="bookmarkBtn" class="icon-btn" title="Bookmark this spot (b)">🔖</button>
     </div>
     <div class="seek">
       <span id="curTime" class="time">0:00</span>
@@ -76,6 +99,20 @@
           <option value="2">2×</option>
         </select>
       </label>
+      <label class="sleep">
+        <span>😴</span>
+        <select id="sleepSelect" title="Sleep timer — pause playback after a while">
+          <option value="0" selected>Off</option>
+          <option value="5">5 min</option>
+          <option value="10">10 min</option>
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+          <option value="45">45 min</option>
+          <option value="60">60 min</option>
+          <option value="chapter">End of chapter</option>
+        </select>
+        <span id="sleepLeft" class="sleep-left" hidden></span>
+      </label>
       <label class="vol">
         🔊 <input id="volBar" type="range" min="0" max="1" step="0.05" value="1" />
       </label>
@@ -90,6 +127,7 @@
 <div id="modal" class="modal" hidden>
   <div class="modal-card">
     <h2>Add a book</h2>
+    <div id="healthWarn" class="health-warn" hidden></div>
     <form id="ingestForm">
       <label class="field">File (PDF or EPUB)
         <input id="pdfFile" type="file"
@@ -125,6 +163,26 @@
     <p class="hint">Generates locally with Kokoro-82M, chapter by chapter — you can start
       listening as soon as the first chapter is ready while the rest finish in the
       background. (The model downloads once on first run.)</p>
+  </div>
+</div>
+
+<!-- KEYBOARD SHORTCUTS -->
+<div id="shortcutsModal" class="modal" hidden>
+  <div class="modal-card shortcuts-card">
+    <h2>Keyboard shortcuts</h2>
+    <div class="shortcuts-grid">
+      <kbd>Space</kbd><span>Play / pause</span>
+      <kbd>← / →</kbd><span>Back / forward 10 seconds</span>
+      <kbd>↑ / ↓</kbd><span>Previous / next sentence</span>
+      <kbd>[ / ]</kbd><span>Previous / next chapter</span>
+      <kbd>/</kbd><span>Search this book</span>
+      <kbd>B</kbd><span>Bookmark the current spot</span>
+      <kbd>?</kbd><span>Show this help</span>
+      <kbd>Esc</kbd><span>Close · clear search · back to library</span>
+    </div>
+    <div class="modal-actions">
+      <button type="button" id="closeShortcuts" class="primary">Got it</button>
+    </div>
   </div>
 </div>
 

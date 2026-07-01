@@ -8,3 +8,4 @@ library/books/*
 !library/books/.gitkeep
 scratchpad/
 *.abk
+.claude/
