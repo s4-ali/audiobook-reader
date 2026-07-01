@@ -102,7 +102,7 @@ def health_report() -> dict:
                        "device": config.KOKORO_DEVICE, "mps_available": _mps_available()},
         },
         "audio": {"configured_format": fmt, "effective_format": effective_fmt,
-                  "mp3_quality": config.MP3_QUALITY, "sample_rate": config.SAMPLE_RATE},
+                  "mp3_bitrate": config.MP3_BITRATE, "sample_rate": config.SAMPLE_RATE},
         "defaults": {"voice": config.DEFAULT_VOICE, "lang": config.DEFAULT_LANG,
                      "speed": config.DEFAULT_SPEED},
         "pronunciation": {"file": str(config.PRONUNCIATION_FILE),

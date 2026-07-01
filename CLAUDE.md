@@ -145,6 +145,14 @@ and replicates the "missing chapter status = ready" leniency via `Chapter.isRead
   uses `isReady()` for this; mirror that leniency in any new manifest-reading code.
 - CSS uses `[hidden] { display: none !important; }` because the toggled elements (`#modal`,
   `#player`, …) set an explicit `display` that would otherwise beat the `hidden` attribute.
+- **MP3 output must be CBR, never VBR** (`config.MP3_BITRATE` → ffmpeg `-b:a`, not `-q:a`).
+  The per-sentence `s`/`e` timings are raw-PCM sample offsets; for them to line up with what a
+  player seeks to, the file needs an exact time↔byte mapping. CBR gives that (every frame is
+  the same byte size); VBR does not, so browsers (`<audio>.currentTime`) and ExoPlayer/just_audio
+  fall back to interpolating the coarse Xing TOC and land seeks *seconds* off — that desyncs the
+  karaoke highlight and sends click-to-seek to the wrong sentence. Re-encoding VBR→CBR is
+  content-preserving (identical duration + sample timeline), so `scripts/reencode_cbr.py` fixes
+  legacy books in place without re-running TTS.
 - MP3 encoding adds a fixed ~50 ms leading delay vs. the raw-PCM-derived timings — a constant
   offset, negligible for sentence-level highlighting; don't try to "fix" it per chapter.
 - **Mobile (`mobile/`) Android gotchas**: `MainActivity` must extend `AudioServiceActivity`

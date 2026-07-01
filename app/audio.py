@@ -8,7 +8,7 @@ from typing import List
 
 import numpy as np
 
-from .config import MP3_QUALITY, SAMPLE_RATE
+from .config import MP3_BITRATE, SAMPLE_RATE
 
 
 def silence(ms: int, sr: int = SAMPLE_RATE) -> np.ndarray:
@@ -52,10 +52,13 @@ def write_audio(audio: np.ndarray, out_path: Path, sr: int = SAMPLE_RATE,
 def _encode_mp3(audio: np.ndarray, out_path: Path, sr: int) -> Path:
     if out_path.suffix.lower() != ".mp3":
         out_path = out_path.with_suffix(".mp3")
+    # CBR (-b:a, not -q:a): constant frame size => a player computes an exact byte offset
+    # for any timestamp. VBR's variable frames force interpolation of the coarse Xing TOC,
+    # which lands seeks seconds off and desyncs the highlight. See config.MP3_BITRATE.
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-f", "f32le", "-ar", str(sr), "-ac", "1", "-i", "pipe:0",
-        "-c:a", "libmp3lame", "-q:a", str(MP3_QUALITY), str(out_path),
+        "-c:a", "libmp3lame", "-b:a", str(MP3_BITRATE), str(out_path),
     ]
     proc = subprocess.run(cmd, input=audio.tobytes(), stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE)

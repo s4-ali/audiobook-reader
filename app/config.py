@@ -24,7 +24,12 @@ SAMPLE_RATE = 24000                                       # Kokoro is fixed at 2
 
 # --- Audio output ------------------------------------------------------------
 AUDIO_FORMAT = os.environ.get("AUDIO_FORMAT", "mp3")     # "mp3" | "wav"
-MP3_QUALITY = os.environ.get("MP3_QUALITY", "4")         # libmp3lame -q:a (0=best..9)
+# CBR (constant bitrate), NOT VBR. Every MP3 frame is then the same byte size, so a player
+# maps a timestamp to an exact byte/frame offset instead of interpolating the coarse Xing
+# TOC that VBR forces on it. VBR MP3 seeking in browsers (<audio>.currentTime) and in
+# ExoPlayer/just_audio lands seconds off, which desynced the karaoke highlight and made
+# click-to-seek jump to the wrong sentence. 64k mono @ 24 kHz is transparent for speech.
+MP3_BITRATE = os.environ.get("MP3_BITRATE", "64k")       # libmp3lame -b:a (CBR)
 SENTENCE_GAP_MS = int(os.environ.get("SENTENCE_GAP_MS", "90"))
 PARAGRAPH_GAP_MS = int(os.environ.get("PARAGRAPH_GAP_MS", "320"))
 
