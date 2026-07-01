@@ -181,7 +181,7 @@ class _BrowseScreenState extends State<BrowseScreen> {
       leading: const Icon(Icons.menu_book),
       title: Text(b.title, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: Text(
-        '${b.author.isEmpty ? 'Unknown' : b.author} · ${b.nChapters} ch · ${fmtMinutes(b.duration)}'
+        '${b.author.isEmpty ? 'Unknown' : b.author} · ${b.nChapters} ch · ${fmtHm(b.duration)}'
         '${b.isReady ? '' : ' · ${b.status}'}',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,

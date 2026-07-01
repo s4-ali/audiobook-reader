@@ -17,6 +17,12 @@ const fmtTime = (sec) => {
   const mm = h ? String(m).padStart(2, "0") : String(m);
   return (h ? h + ":" : "") + mm + ":" + String(s).padStart(2, "0");
 };
+// Compact total duration as "1h 53m" (or "45m" under an hour, "2h" on the hour).
+const fmtHrMin = (sec) => {
+  const total = Math.round((sec || 0) / 60);
+  const h = Math.floor(total / 60), m = total % 60;
+  return h ? (m ? `${h}h ${m}m` : `${h}h`) : `${m}m`;
+};
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 // A chapter is playable when explicitly "ready", or (legacy manifests) when it has no status.
 const isReady = (ch) => !!ch && (!ch.status || ch.status === "ready");
@@ -52,7 +58,6 @@ async function loadLibrary() {
   for (const b of books) {
     const card = document.createElement("div");
     card.className = "book-card";
-    const mins = Math.round((b.duration || 0) / 60);
     const generating = b.status === "generating";
     const ready = (b.status || "ready") === "ready";
     const badge = generating
@@ -70,7 +75,7 @@ async function loadLibrary() {
       <div class="cover">📖</div>
       <h3>${escapeHtml(b.title || b.id)}</h3>
       <div class="author">${escapeHtml(b.author || "Unknown")}</div>
-      <div class="stats"><span>${b.n_chapters} chapters</span><span>${mins} min</span>
+      <div class="stats"><span>${b.n_chapters} chapters</span><span>${fmtHrMin(b.duration)}</span>
         <span>${escapeHtml(b.voice || "")}</span></div>
       ${resumeBarHtml(b)}`;
     card.addEventListener("click", () => openBook(b.id));

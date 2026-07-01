@@ -8,5 +8,12 @@ String fmtClock(Duration d) {
   return '$m:$ss';
 }
 
-/// Round a number of seconds to whole minutes, e.g. "42 min".
-String fmtMinutes(double seconds) => '${(seconds / 60).round()} min';
+/// Compact total duration as "1h 53m" (or "45m" under an hour, "2h" on the hour).
+String fmtHm(double seconds) {
+  final total = (seconds / 60).round();
+  final h = total ~/ 60;
+  final m = total % 60;
+  if (h == 0) return '${m}m';
+  if (m == 0) return '${h}h';
+  return '${h}h ${m}m';
+}

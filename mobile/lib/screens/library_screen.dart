@@ -324,7 +324,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(color: cSubtext0, fontSize: 12)),
             const SizedBox(height: 4),
-            Text('${book.chaptersTotal} ch · ${fmtMinutes(book.totalDuration)}',
+            Text('${book.chaptersTotal} ch · ${fmtHm(book.totalDuration)}',
                 style: const TextStyle(color: cSubtext0, fontSize: 11)),
             if (p != null && p.frac > 0) ...[
               const SizedBox(height: 8),

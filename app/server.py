@@ -346,7 +346,19 @@ def _start_resume_job(book_id: str):
 
 
 # --------------------------------------------------------------- static mounts
+class _NoCacheStaticFiles(StaticFiles):
+    """Serve the UI assets with revalidation. There's no build step, so app.js/styles.css
+    change in place; ``Cache-Control: no-cache`` makes the browser revalidate (cheap 304 when
+    unchanged) instead of showing a stale copy after an edit. Audio under /media is unaffected
+    and keeps default caching for fast HTTP-Range seeking."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 # Audio + manifests (StaticFiles supports HTTP Range, so seeking works).
 app.mount("/media", StaticFiles(directory=str(config.BOOKS_DIR)), name="media")
-# Frontend (index.html at "/").
-app.mount("/", StaticFiles(directory=str(config.WEB_DIR), html=True), name="web")
+# Frontend (index.html at "/") — no-cache so UI edits show up on a normal reload.
+app.mount("/", _NoCacheStaticFiles(directory=str(config.WEB_DIR), html=True), name="web")
