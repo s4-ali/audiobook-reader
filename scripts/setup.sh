@@ -11,8 +11,14 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 # 1. Virtual environment on Python 3.13 (uv fetches it if missing).
-echo "==> Creating .venv (Python 3.13)"
-uv venv --python 3.13 .venv
+# Reuse an existing .venv so re-running (e.g. to add --voxtral later) is additive and never
+# wipes an already-installed engine stack; only create it the first time.
+if [[ -d .venv ]]; then
+  echo "==> Reusing existing .venv"
+else
+  echo "==> Creating .venv (Python 3.13)"
+  uv venv --python 3.13 .venv
+fi
 
 # 2. Base dependencies.
 echo "==> Installing base dependencies"
