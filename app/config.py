@@ -6,6 +6,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# --- Server bind + phone pairing ---------------------------------------------
+# scripts/run.sh exports HOST/PORT; the app reads them back so it can report its own address
+# (GET /api/server-info), render the pairing QR, and advertise over mDNS. HOST=0.0.0.0 is what
+# makes the server reachable from a phone on the same Wi-Fi (the default 127.0.0.1 is local-only).
+BIND_HOST = os.environ.get("HOST", "127.0.0.1")
+PORT = int(os.environ.get("PORT", "8000"))
+# Advertise the server on the LAN via mDNS/Bonjour (only actually happens when LAN-reachable).
+MDNS_ENABLED = os.environ.get("MDNS_ENABLED", "1").strip().lower() not in ("0", "false", "no")
+MDNS_SERVICE_TYPE = "_audiobook._tcp.local."
+
 # --- Filesystem layout -------------------------------------------------------
 LIBRARY_DIR = Path(os.environ.get("AUDIOBOOK_LIBRARY", ROOT / "library")).resolve()
 INBOX_DIR = LIBRARY_DIR / "inbox"      # drop PDFs here

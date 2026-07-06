@@ -4,6 +4,7 @@ from __future__ import annotations
 import threading
 import traceback
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -17,7 +18,21 @@ from .extract import SUPPORTED_EXTS
 from .ingest import ingest_pdf, JobControl, _write_manifest_atomic
 
 config.ensure_dirs()
-app = FastAPI(title="Audiobook Reader")
+
+
+@asynccontextmanager
+async def _lifespan(app: "FastAPI"):
+    # Advertise the server over mDNS so the phone app can auto-discover it (fail-safe: no-ops
+    # when localhost-only or when zeroconf isn't installed — never blocks startup).
+    from . import netinfo
+    handle = netinfo.start_mdns()
+    try:
+        yield
+    finally:
+        netinfo.stop_mdns(handle)
+
+
+app = FastAPI(title="Audiobook Reader", lifespan=_lifespan)
 
 # Curated Kokoro voices for the UI (lang_code 'a' = US, 'b' = UK).
 VOICES = [
@@ -66,6 +81,31 @@ def api_health():
     """Diagnostics: tool/engine availability, effective audio format, library + config."""
     from . import health
     return health.health_report()
+
+
+@app.get("/api/server-info")
+def api_server_info():
+    """This server's LAN address(es) + whether it's reachable from other devices.
+
+    Powers the "Connect your phone" panel (QR + address) and lets the mobile app confirm a
+    connection. See app/netinfo.py."""
+    from . import netinfo
+    return netinfo.server_info()
+
+
+@app.get("/api/pair.svg")
+def api_pair_svg():
+    """A scannable QR of this server's primary LAN URL — the phone app scans it to connect."""
+    from . import netinfo
+    info = netinfo.server_info()
+    url = info.get("primary")
+    if not url:
+        raise HTTPException(503, "No Wi-Fi address found — connect this computer to a network.")
+    try:
+        svg = netinfo.qr_svg(url)
+    except ImportError:
+        raise HTTPException(503, "QR generation needs the 'qrcode' package (pip install qrcode).")
+    return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/books/{book_id}/manifest")

@@ -8,3 +8,7 @@ soundfile>=0.12
 numpy>=1.26
 pysbd>=0.3.4
 python-multipart>=0.0.9
+# Phone pairing (app/netinfo.py): QR of the LAN address + mDNS auto-discovery. Both are
+# best-effort — the server degrades gracefully if either is missing.
+qrcode>=7.4
+zeroconf>=0.130
