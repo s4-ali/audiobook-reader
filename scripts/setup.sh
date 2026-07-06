@@ -18,11 +18,17 @@ uv venv --python 3.13 .venv
 echo "==> Installing base dependencies"
 uv pip install --python .venv/bin/python -r requirements.txt
 
-# 3. Optional: real TTS stack.
-if [[ "${1:-}" == "--tts" ]]; then
-  echo "==> Installing Kokoro + PyTorch (this is a large download)"
-  uv pip install --python .venv/bin/python -r requirements-tts.txt
-fi
+# 3. Optional heavy TTS stacks (pass either/both: --tts for Kokoro, --voxtral for Voxtral).
+for arg in "$@"; do
+  case "$arg" in
+    --tts)
+      echo "==> Installing Kokoro + PyTorch (this is a large download)"
+      uv pip install --python .venv/bin/python -r requirements-tts.txt ;;
+    --voxtral)
+      echo "==> Installing Voxtral via mlx-audio (Apple Silicon; large model on first run)"
+      uv pip install --python .venv/bin/python -r requirements-voxtral.txt ;;
+  esac
+done
 
 # 4. Check system tools.
 echo
@@ -41,5 +47,6 @@ fi
 echo
 echo "Done. Next:"
 echo "  • Real narration deps:  ./scripts/setup.sh --tts"
+echo "  • Premium voices deps:  ./scripts/setup.sh --voxtral   (Voxtral-4B, Apple Silicon)"
 echo "  • Start the player:     ./scripts/run.sh   then open http://127.0.0.1:8000"
 echo "  • Ingest a PDF (CLI):   ./scripts/ingest.sh path/to/book.pdf"

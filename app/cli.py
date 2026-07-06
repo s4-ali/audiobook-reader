@@ -98,7 +98,7 @@ def cmd_info(args) -> int:
 def cmd_doctor(args) -> int:
     h = health.health_report()
     t, e, a = h["tools"], h["engines"], h["audio"]
-    k, pr, lib = e["kokoro"], h["pronunciation"], h["library"]
+    k, vx, pr, lib = e["kokoro"], e["voxtral"], h["pronunciation"], h["library"]
     yn = lambda b: "✓" if b else "✗"
     print(f"Audiobook Reader {h['version']}  [{h['status'].upper()}]")
     print(f"  python     {h['python']} · {h['platform']}")
@@ -106,8 +106,9 @@ def cmd_doctor(args) -> int:
     print(f"  espeak-ng  {yn(t['espeak_ng']['available'])} {t['espeak_ng'].get('path') or 'not found'}")
     print(f"  engine     default={e['default']} · dummy ✓ · kokoro {yn(k['available'])} "
           f"(torch={yn(k['torch'])} kokoro={yn(k['kokoro'])} device={k['device']} mps={k['mps_available']})")
+    print(f"             voxtral {yn(vx['available'])} (mlx-audio={yn(vx['mlx_audio'])}) · {vx['repo']}")
     print(f"  audio      {a['configured_format']} → {a['effective_format']} "
-          f"(q{a['mp3_quality']}, {a['sample_rate']}Hz)")
+          f"({a['mp3_bitrate']} CBR, {a['sample_rate']}Hz)")
     print(f"  pronounce  {'enabled' if pr['enabled'] else 'off'} · {pr['file']}")
     print(f"  library    {lib['books']} book(s), {lib['generating']} generating · {lib['path']}")
     for w in h["warnings"]:

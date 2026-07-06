@@ -67,6 +67,7 @@ def health_report() -> dict:
     torch_ok = _module_present("torch")
     kokoro_ok = _module_present("kokoro")
     kokoro_ready = torch_ok and kokoro_ok       # the real engine needs both
+    mlx_audio_ok = _module_present("mlx_audio")  # the Voxtral engine needs this (Apple Silicon)
 
     fmt = config.AUDIO_FORMAT.lower()
     effective_fmt = fmt if (fmt != "mp3" or ffmpeg_ok) else "wav"
@@ -79,6 +80,10 @@ def health_report() -> dict:
         missing = ", ".join(m for m, ok in (("torch", torch_ok), ("kokoro", kokoro_ok)) if not ok)
         warnings.append(f"Default engine is 'kokoro' but {missing} not installed — run "
                         f"./scripts/setup.sh --tts, or ingest with --engine dummy to test.")
+    if config.DEFAULT_ENGINE == "voxtral" and not mlx_audio_ok:
+        warnings.append("Default engine is 'voxtral' but mlx-audio not installed — run "
+                        "./scripts/setup.sh --voxtral (Apple Silicon), or ingest with "
+                        "--engine dummy/kokoro.")
     if fmt == "mp3" and not ffmpeg_ok:
         warnings.append("ffmpeg not found — audio is written as WAV instead of MP3 "
                         "(install: brew install ffmpeg).")
@@ -100,6 +105,8 @@ def health_report() -> dict:
             "dummy": True,
             "kokoro": {"available": kokoro_ready, "torch": torch_ok, "kokoro": kokoro_ok,
                        "device": config.KOKORO_DEVICE, "mps_available": _mps_available()},
+            "voxtral": {"available": mlx_audio_ok, "mlx_audio": mlx_audio_ok,
+                        "repo": config.VOXTRAL_REPO},
         },
         "audio": {"configured_format": fmt, "effective_format": effective_fmt,
                   "mp3_bitrate": config.MP3_BITRATE, "sample_rate": config.SAMPLE_RATE},

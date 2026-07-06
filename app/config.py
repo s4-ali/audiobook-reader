@@ -13,7 +13,7 @@ BOOKS_DIR = LIBRARY_DIR / "books"      # generated audiobooks live here
 WEB_DIR = ROOT / "web"                 # static frontend
 
 # --- TTS defaults ------------------------------------------------------------
-DEFAULT_ENGINE = os.environ.get("TTS_ENGINE", "kokoro")  # "kokoro" | "dummy"
+DEFAULT_ENGINE = os.environ.get("TTS_ENGINE", "kokoro")  # "kokoro" | "voxtral" | "dummy"
 DEFAULT_VOICE = os.environ.get("KOKORO_VOICE", "af_heart")
 DEFAULT_LANG = os.environ.get("KOKORO_LANG", "a")        # a=US English, b=UK English, ...
 DEFAULT_SPEED = float(os.environ.get("KOKORO_SPEED", "1.0"))
@@ -21,6 +21,13 @@ DEFAULT_SPEED = float(os.environ.get("KOKORO_SPEED", "1.0"))
 # (less kernel-launch overhead; istft runs on CPU anyway). Override with "mps"/"auto".
 KOKORO_DEVICE = os.environ.get("KOKORO_DEVICE", "cpu")   # cpu | mps | auto
 SAMPLE_RATE = 24000                                       # Kokoro is fixed at 24 kHz
+
+# Voxtral-4B-TTS (Mistral) — optional premium engine, run locally via MLX (Apple Silicon).
+# Also 24 kHz, so it fits the pipeline unchanged. Weights are CC BY-NC 4.0 (non-commercial);
+# heavier + slower than Kokoro. See app/tts/voxtral_engine.py. Enable with TTS_ENGINE=voxtral
+# or `--engine voxtral`; install with `./scripts/setup.sh --voxtral`.
+VOXTRAL_REPO = os.environ.get("VOXTRAL_REPO", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
+VOXTRAL_VOICE = os.environ.get("VOXTRAL_VOICE", "casual_male")  # a Voxtral preset, not a Kokoro id
 
 # --- Audio output ------------------------------------------------------------
 AUDIO_FORMAT = os.environ.get("AUDIO_FORMAT", "mp3")     # "mp3" | "wav"

@@ -19,7 +19,11 @@ def make_engine(engine: str = None, voice: str = None, lang: str = None,
     if engine == "kokoro":
         from .kokoro_engine import KokoroEngine
         return KokoroEngine(lang=lang, voice=voice, speed=speed, device=device)
-    raise ValueError(f"Unknown TTS engine: {engine!r} (use 'kokoro' or 'dummy')")
+    if engine == "voxtral":
+        from .voxtral_engine import VoxtralEngine
+        return VoxtralEngine(voice=voice, model_repo=config.VOXTRAL_REPO,
+                             speed=speed, default_voice=config.VOXTRAL_VOICE)
+    raise ValueError(f"Unknown TTS engine: {engine!r} (use 'kokoro', 'voxtral', or 'dummy')")
 
 
 __all__ = ["TTSEngine", "make_engine"]
