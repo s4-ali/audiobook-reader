@@ -1,10 +1,25 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- LAN download from the desktop server -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- mDNS/Bonjour auto-discovery of the desktop server. The `nsd` plugin must hold a Wi-Fi
+         multicast lock to receive `_audiobook._tcp` advertisements; without this permission it
+         can't create the lock and startDiscovery fails, so the computer never appears in the
+         app's discovery list (QR-scan / manual entry still work). Install-time, no runtime prompt. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
+    <!-- Store books in a persistent, file-explorer-visible /Audiobooks folder that survives an
+         app reinstall. On Android 11+ this needs the "All files access" special permission; the
+         legacy storage perms cover Android 10 and below (requested at runtime). -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>
     <!-- Background audio + lock-screen controls (just_audio_background) -->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+    <!-- Scan the desktop's pairing QR code (mobile_scanner). Camera is optional so the app
+         still installs on camera-less devices — discovery/manual entry cover them. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera.any" android:required="false"/>
     <application
         android:label="Audiobook Player"
         android:name="${applicationName}"
