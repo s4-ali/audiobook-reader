@@ -30,11 +30,20 @@ class BookDoc:
     linear_text: str            # whole book as one string
     page_offsets: List[int]     # char offset where each page/document begins
     markers: List[Marker] = field(default_factory=list)
-    toc_source: str = "none"    # outline | font | epub-nav | epub-spine | none
+    toc_source: str = "none"    # outline | font | epub-nav | epub-spine | llm | none
+    # LLM structure profile (app/structure.py) when one was applied; else None. Carries
+    # skip_sections / heading_labels rules that ingest.segment_chapters honors.
+    profile: dict | None = None
+    structure_source: str = "heuristic"   # "llm" if the profile drove cleaning, else "heuristic"
 
 
-def extract(path: str | Path) -> BookDoc:
-    """Dispatch to the right extractor based on file extension."""
+def extract(path: str | Path, *, smart_parse: bool | None = None,
+            reprofile: bool = False) -> BookDoc:
+    """Dispatch to the right extractor based on file extension.
+
+    ``smart_parse`` overrides the ``STRUCTURE_LLM`` config (None = let config decide);
+    ``reprofile`` ignores any cached structure profile and re-runs the model.
+    """
     ext = Path(path).suffix.lower()
     if ext == ".pdf":
         from .pdf_extract import extract as _extract
@@ -43,4 +52,4 @@ def extract(path: str | Path) -> BookDoc:
     else:
         raise ValueError(
             f"Unsupported file type {ext!r}. Supported: {', '.join(SUPPORTED_EXTS)}")
-    return _extract(path)
+    return _extract(path, smart_parse=smart_parse, reprofile=reprofile)

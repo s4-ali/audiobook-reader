@@ -88,6 +88,8 @@ class Chapter:
 # ---------------------------------------------------------------------------
 
 def segment_chapters(doc: BookDoc) -> List[Chapter]:
+    from . import structure
+
     text = doc.linear_text
     level1 = [m for m in doc.markers if m.level == 1]
 
@@ -96,9 +98,21 @@ def segment_chapters(doc: BookDoc) -> List[Chapter]:
     else:
         chapters = _segment_fixed(text)
 
-    # Drop empty chapters and renumber.
+    prof = structure.StructureProfile.from_json(doc.profile) if doc.profile else None
+
+    # Apply the profile (skip non-narratable sections; trim spoken heading labels), drop
+    # empty chapters, and renumber.
     out: List[Chapter] = []
     for ch in chapters:
+        if prof is not None and structure.should_skip_section(prof, ch.title, ch.page):
+            continue
+        if prof is not None:
+            cut = structure.strip_heading_labels(prof, ch.text, ch.title)
+            if 0 < cut < len(ch.text):
+                # Trim the label AND advance the chapter's start offset in lockstep so
+                # sentence char offsets and topic timings stay aligned downstream.
+                ch.text = ch.text[cut:]
+                ch.start += cut
         if textproc.word_count(ch.text) == 0:
             continue
         ch.index = len(out)
@@ -259,6 +273,7 @@ def _skeleton(book_id, doc, chapters, eng_info, fmt, sr, voice, lang, speed) -> 
         "speed": eng_info.get("speed", speed if speed is not None else config.DEFAULT_SPEED),
         "device": eng_info.get("device", ""),
         "sample_rate": sr, "audio_format": fmt, "toc_source": doc.toc_source,
+        "structure_source": doc.structure_source,
         "n_pages": doc.n_pages,
         "status": "generating", "chapters_total": len(chapters), "chapters_ready": 0,
         "total_duration": 0.0,
@@ -277,7 +292,8 @@ def ingest_pdf(pdf_path: str | Path, *, engine_name: str = None, voice: str = No
                lang: str = None, speed: float = None, device: str = None,
                audio_format: str = None, overwrite: bool = True, resume: bool = False,
                progress: Optional[ProgressFn] = None, engine=None,
-               control: Optional[JobControl] = None) -> dict:
+               control: Optional[JobControl] = None,
+               smart_parse: Optional[bool] = None, reprofile: bool = False) -> dict:
     """Generate an audiobook, writing each chapter's audio + manifest as it finishes.
 
     The manifest (with the full chapter list) is written *before* any audio, so the
@@ -295,7 +311,9 @@ def ingest_pdf(pdf_path: str | Path, *, engine_name: str = None, voice: str = No
             progress(ev)
 
     report("extract", message=f"Reading {pdf_path.name}")
-    doc = book_extract.extract(pdf_path)
+    doc = book_extract.extract(pdf_path, smart_parse=smart_parse, reprofile=reprofile)
+    if doc.structure_source == "llm":
+        report("extract", message="Structure profiled by LLM")
     chapters = segment_chapters(doc)
     if not chapters:
         raise RuntimeError("No readable text found in PDF.")
@@ -319,6 +337,12 @@ def ingest_pdf(pdf_path: str | Path, *, engine_name: str = None, voice: str = No
         else:
             raise FileExistsError(f"Book '{book_id}' already exists (use --overwrite or --resume).")
     book_dir.mkdir(parents=True, exist_ok=True)
+    if doc.profile:  # a readable copy of the applied structure profile, for inspection/editing
+        try:
+            (book_dir / "structure.json").write_text(
+                json.dumps(doc.profile, ensure_ascii=False, indent=1), encoding="utf-8")
+        except OSError:
+            pass
 
     if engine is None:
         report("model", message=f"Loading {engine_name or config.DEFAULT_ENGINE} engine")
@@ -333,6 +357,7 @@ def ingest_pdf(pdf_path: str | Path, *, engine_name: str = None, voice: str = No
     else:
         manifest = _skeleton(book_id, doc, chapters, eng_info, fmt, sr, voice, lang, speed)
     manifest["source_pdf"] = pdf_path.name
+    manifest["structure_source"] = doc.structure_source
     pron_rules = pronounce.load_rules()
     manifest["pronunciation_rules"] = len(pron_rules)
     _write_manifest_atomic(book_dir, manifest)
@@ -441,7 +466,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Ingest a PDF into a narrated audiobook.")
     p.add_argument("pdf", nargs="?",
                    help="PDF or EPUB file (default: every PDF/EPUB in library/inbox/)")
-    p.add_argument("--engine", default=config.DEFAULT_ENGINE, choices=["kokoro", "dummy"])
+    p.add_argument("--engine", default=config.DEFAULT_ENGINE, choices=["kokoro", "voxtral", "dummy"])
     p.add_argument("--voice", default=config.DEFAULT_VOICE)
     p.add_argument("--lang", default=config.DEFAULT_LANG)
     p.add_argument("--speed", type=float, default=config.DEFAULT_SPEED)
@@ -450,6 +475,12 @@ def main(argv=None) -> int:
     p.add_argument("--no-overwrite", action="store_true")
     p.add_argument("--resume", action="store_true",
                    help="resume an interrupted book (skip chapters already generated)")
+    p.add_argument("--smart-parse", dest="smart_parse", action="store_true", default=None,
+                   help="use the LLM structure profiler (overrides STRUCTURE_LLM)")
+    p.add_argument("--no-smart-parse", dest="smart_parse", action="store_false",
+                   help="disable the LLM structure profiler for this run")
+    p.add_argument("--reprofile", action="store_true",
+                   help="ignore any cached structure profile and re-run the model")
     args = p.parse_args(argv)
 
     if args.pdf:
@@ -474,7 +505,8 @@ def main(argv=None) -> int:
         m = ingest_pdf(pdf, engine=engine, voice=args.voice, lang=args.lang,
                        speed=args.speed, audio_format=args.fmt,
                        overwrite=not args.no_overwrite, resume=args.resume,
-                       progress=_cli_progress)
+                       progress=_cli_progress,
+                       smart_parse=args.smart_parse, reprofile=args.reprofile)
         mins = m["total_duration"] / 60
         print(f"  ✓ {m['title']} — {m['chapters_ready']}/{m['chapters_total']} chapters, "
               f"{mins:.1f} min ({m['status']})  (id: {m['id']})")

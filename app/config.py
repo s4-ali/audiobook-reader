@@ -53,6 +53,23 @@ WORDS_PER_FALLBACK_CHAPTER = int(os.environ.get("WORDS_PER_FALLBACK_CHAPTER", "1
 # Minimum chars of front-matter before the first heading to keep it as its own chapter.
 MIN_FRONTMATTER_CHARS = 600
 
+# --- LLM-assisted structure parsing (app/structure.py) -----------------------
+# A headless Claude Code call runs ONCE per book on a small page sample and emits a
+# StructureProfile (cleaning rules + a corrected chapter list) that deterministic code
+# applies to every page. It never sees the whole book. Any failure falls back to the
+# heuristic path, so this is always safe to leave on.
+#   auto = use it iff the `claude` CLI is on PATH; 1 = force on; 0 = off.
+STRUCTURE_LLM = os.environ.get("STRUCTURE_LLM", "auto").strip().lower()
+# Model alias/id for the profiling call (empty = the claude CLI's own default).
+STRUCTURE_MODEL = os.environ.get("STRUCTURE_MODEL", "").strip()
+# Char budget for the sampled pages fed to the model (keeps tokens/cost bounded).
+STRUCTURE_SAMPLE_BUDGET = int(os.environ.get("STRUCTURE_SAMPLE_BUDGET", "40000"))
+# Seconds to wait for the headless profiling call before falling back.
+STRUCTURE_TIMEOUT = int(os.environ.get("STRUCTURE_TIMEOUT", "180"))
+# Cached profiles keyed by source-content hash (re-ingest / --resume is then free).
+STRUCTURE_CACHE_DIR = Path(os.environ.get(
+    "STRUCTURE_CACHE_DIR", LIBRARY_DIR / ".cache" / "structure")).resolve()
+
 
 def ensure_dirs() -> None:
     for d in (INBOX_DIR, BOOKS_DIR):

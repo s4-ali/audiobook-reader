@@ -23,34 +23,61 @@ def _meta(doc, key: str) -> str:
     return v.strip()
 
 
-def extract(pdf_path: str | Path) -> BookDoc:
+def extract(pdf_path: str | Path, *, smart_parse=None, reprofile=False) -> BookDoc:
+    from . import structure
+
     pdf_path = Path(pdf_path)
     doc = fitz.open(pdf_path)
 
     raw_pages = [doc.load_page(i).get_text("text") for i in range(doc.page_count)]
-    running = textproc.detect_running_lines(raw_pages)
+    title = _meta(doc, "title") or pdf_path.stem.replace("_", " ").strip()
+    author = _meta(doc, "author")
 
-    pages: List[str] = []
+    # Optionally derive a per-book structure profile from a small sampled + geometry view.
+    profile = structure.HEURISTIC
+    geometry = None
+    if structure.enabled(smart_parse):
+        geometry = [structure.pdf_line_geometry(doc.load_page(i)) for i in range(doc.page_count)]
+        toc = [(max(1, int(l)), (t or "").strip(), max(0, p - 1))
+               for l, t, p in (doc.get_toc(simple=True) or []) if (t or "").strip()]
+        meta = {"title": title, "author": author, "ext": "pdf", "n_pages": doc.page_count}
+        profile = structure.profile_book(pdf_path, raw_pages, geometry, toc, meta,
+                                         reprofile=reprofile)
+
+    # Cleaning: profile-driven when we have one, else the existing running-line heuristic.
+    if profile.is_llm:
+        pages = structure.apply_cleaning(raw_pages, geometry, profile)
+    else:
+        running = textproc.detect_running_lines(raw_pages)
+        pages = [textproc.clean_page(r, running) for r in raw_pages]
+
     page_offsets: List[int] = []
     parts: List[str] = []
     cursor = 0
-    for raw in raw_pages:
-        cleaned = textproc.clean_page(raw, running)
+    for cleaned in pages:
         page_offsets.append(cursor)
-        pages.append(cleaned)
         parts.append(cleaned)
         cursor += len(cleaned) + 2  # +2 for the "\n\n" page joiner
     linear_text = "\n\n".join(parts)
 
-    title = _meta(doc, "title") or pdf_path.stem.replace("_", " ").strip()
-    author = _meta(doc, "author")
-
-    markers, source = _build_markers(doc, pages, page_offsets, linear_text)
+    # Structure: LLM markers ("correct"/"derive"), else the embedded outline / font heuristic.
+    markers = None
+    source = None
+    if profile.is_llm:
+        markers = structure.build_markers(
+            profile, pages, page_offsets,
+            lambda t, p: _locate_offset(t, p, pages, page_offsets))
+        if markers is not None:
+            source = "llm"
+    if markers is None:
+        markers, source = _build_markers(doc, pages, page_offsets, linear_text)
 
     result = BookDoc(
         title=title, author=author, n_pages=doc.page_count,
         pages=pages, linear_text=linear_text, page_offsets=page_offsets,
         markers=markers, toc_source=source,
+        profile=profile.to_json() if profile.is_llm else None,
+        structure_source="llm" if profile.is_llm else "heuristic",
     )
     doc.close()
     return result

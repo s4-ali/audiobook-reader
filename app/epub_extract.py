@@ -81,7 +81,11 @@ def _locate_in_text(title: str, text: str) -> int:
     return int(p / max(1, len(norm)) * len(text))
 
 
-def extract(epub_path: str | Path) -> BookDoc:
+def load_spine(epub_path: str | Path):
+    """Read the spine into cleaned per-document text. Shared by :func:`extract` and the
+    structure profiler (``structure.load_views``). Returns ``(book, pages, name_to_index,
+    meta)`` — no offsets, since cleaning may still change the text downstream.
+    """
     import ebooklib
     from ebooklib import epub
 
@@ -92,61 +96,32 @@ def extract(epub_path: str | Path) -> BookDoc:
     title = _meta(book, "title") or Path(epub_path).stem.replace("_", " ").strip()
     author = _meta(book, "creator")
 
-    # --- Linear text in spine (reading) order ---
     pages: List[str] = []
-    page_offsets: List[int] = []
     name_to_index: Dict[str, int] = {}
-    parts: List[str] = []
-    cursor = 0
     for entry in book.spine:
         idref = entry[0] if isinstance(entry, (tuple, list)) else entry
         item = book.get_item_with_id(idref)
         if item is None or item.get_type() != ebooklib.ITEM_DOCUMENT:
             continue
-        text = _doc_to_text(item.get_content())
         name = item.get_name() or ""
         idx = len(pages)
         name_to_index[name] = idx
         name_to_index[name.split("/")[-1]] = idx  # also match by basename
-        page_offsets.append(cursor)
-        pages.append(text)
-        parts.append(text)
-        cursor += len(text) + 2  # +2 for the "\n\n" joiner
-    linear_text = "\n\n".join(parts)
+        pages.append(_doc_to_text(item.get_content()))
 
-    markers = _markers_from_toc(book, pages, page_offsets, name_to_index)
-    source = "epub-nav"
-    if not markers:
-        markers = _markers_from_spine(pages, page_offsets)
-        source = "epub-spine" if markers else "none"
-
-    return BookDoc(
-        title=title, author=author, n_pages=len(pages),
-        pages=pages, linear_text=linear_text, page_offsets=page_offsets,
-        markers=markers, toc_source=source,
-    )
+    meta = {"title": title, "author": author, "ext": "epub", "n_pages": len(pages)}
+    return book, pages, name_to_index, meta
 
 
-def _href_index(href: Optional[str], name_to_index: Dict[str, int]) -> Optional[int]:
-    if not href:
-        return None
-    h = href.split("#")[0]
-    if h in name_to_index:
-        return name_to_index[h]
-    base = h.split("/")[-1]
-    return name_to_index.get(base)
-
-
-def _markers_from_toc(book, pages, page_offsets, name_to_index) -> List[Marker]:
-    markers: List[Marker] = []
+def toc_entries(book, name_to_index: Dict[str, int]) -> List:
+    """Normalized nav/TOC as ``[(level, title, page0based)]`` (the single tree walk)."""
+    out: List = []
 
     def add(title, href, level):
         title = (title or "").strip()
         di = _href_index(href, name_to_index)
-        if not title or di is None:
-            return
-        offset = page_offsets[di] + _locate_in_text(title, pages[di])
-        markers.append(Marker(level=max(1, level), title=title, page=di, offset=offset))
+        if title and di is not None:
+            out.append((max(1, level), title, di))
 
     def walk(entry, level):
         if isinstance(entry, (tuple, list)) and len(entry) == 2 and not isinstance(entry[1], str):
@@ -162,6 +137,72 @@ def _markers_from_toc(book, pages, page_offsets, name_to_index) -> List[Marker]:
 
     for top in (book.toc or []):
         walk(top, 1)
+    return out
+
+
+def extract(epub_path: str | Path, *, smart_parse=None, reprofile=False) -> BookDoc:
+    from . import structure
+
+    book, raw_pages, name_to_index, meta = load_spine(epub_path)
+
+    profile = structure.HEURISTIC
+    if structure.enabled(smart_parse):
+        toc = toc_entries(book, name_to_index)
+        profile = structure.profile_book(epub_path, raw_pages, None, toc, meta,
+                                         reprofile=reprofile)
+
+    pages = structure.apply_cleaning(raw_pages, None, profile) if profile.is_llm else raw_pages
+
+    # --- Linear text in spine (reading) order ---
+    page_offsets: List[int] = []
+    parts: List[str] = []
+    cursor = 0
+    for text in pages:
+        page_offsets.append(cursor)
+        parts.append(text)
+        cursor += len(text) + 2  # +2 for the "\n\n" joiner
+    linear_text = "\n\n".join(parts)
+
+    markers = None
+    source = "epub-nav"
+    if profile.is_llm:
+        markers = structure.build_markers(
+            profile, pages, page_offsets,
+            lambda title, page: page_offsets[page] + _locate_in_text(title, pages[page]))
+        if markers is not None:
+            source = "llm"
+    if markers is None:
+        markers = _markers_from_toc(book, pages, page_offsets, name_to_index)
+        source = "epub-nav"
+        if not markers:
+            markers = _markers_from_spine(pages, page_offsets)
+            source = "epub-spine" if markers else "none"
+
+    return BookDoc(
+        title=meta["title"], author=meta["author"], n_pages=len(pages),
+        pages=pages, linear_text=linear_text, page_offsets=page_offsets,
+        markers=markers, toc_source=source,
+        profile=profile.to_json() if profile.is_llm else None,
+        structure_source="llm" if profile.is_llm else "heuristic",
+    )
+
+
+def _href_index(href: Optional[str], name_to_index: Dict[str, int]) -> Optional[int]:
+    if not href:
+        return None
+    h = href.split("#")[0]
+    if h in name_to_index:
+        return name_to_index[h]
+    base = h.split("/")[-1]
+    return name_to_index.get(base)
+
+
+def _markers_from_toc(book, pages, page_offsets, name_to_index) -> List[Marker]:
+    markers = [
+        Marker(level=level, title=title, page=di,
+               offset=page_offsets[di] + _locate_in_text(title, pages[di]))
+        for level, title, di in toc_entries(book, name_to_index)
+    ]
     markers.sort(key=lambda m: m.offset)
     return markers
 
