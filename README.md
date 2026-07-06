@@ -5,7 +5,9 @@ Turn your **PDFs and EPUBs** into navigable audiobooks, narrated locally with
 web player with chapter/topic navigation, full-text search, and
 karaoke-style text highlighting that stays in sync with the voice.
 
-Everything runs **on your machine** — no cloud, no accounts.
+Everything runs **on your machine** — no cloud required. *(Optional: sync your reading
+progress & notes across devices via your own Firebase project — see
+[Optional cloud sync](#optional-cloud-sync-firebase).)*
 
 ## Features
 
@@ -25,7 +27,12 @@ Everything runs **on your machine** — no cloud, no accounts.
 - **Synced highlighting** — the current sentence is highlighted and auto-scrolls;
   click any sentence to jump the audio there.
 - **Search** the whole book (text + chapter/topic titles); click a result to jump.
+- **Reading mode** — a full-screen, distraction-free view (press `F`): the player chrome
+  slides away and the text fills the screen, with audio and highlighting still in sync.
 - **Resume** where you left off (per book), saved in your browser.
+- **Optional cloud sync** — sign in (email + password, your own Firebase project) to sync
+  **reading progress (per sentence)** and **notes/highlights** across the web player and the
+  phone app. Off by default; fully local until you configure it.
 - **Add books from the browser** (upload a PDF → watch the progress bar) or via CLI.
 - **Take it on your phone** — package a finished book and play it **offline** in the
   companion Flutter app (Android), with the same navigation, search and synced highlighting.
@@ -83,6 +90,32 @@ The book appears in the web library as soon as ingest starts and becomes
 playable chapter-by-chapter — you can start listening from the browser while a
 CLI run is still generating later chapters.
 
+## Premium voices — Voxtral-4B (optional, Apple Silicon)
+
+Alongside Kokoro you can narrate with Mistral AI's
+[**Voxtral-4B-TTS**](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603) — a larger, more
+expressive model (20 preset voices across 9 languages) that runs **fully offline** via
+[MLX](https://github.com/ml-explore/mlx) on Apple Silicon. It's well suited to complex
+non-fiction where tone and prosody matter.
+
+```bash
+# one-time: install the MLX stack (mlx-audio); the ~2.5 GB 4-bit model downloads on first run
+./scripts/setup.sh --voxtral
+
+# narrate with Voxtral instead of Kokoro
+./scripts/ingest.sh ~/Books/essays.pdf --engine voxtral --voice casual_male
+```
+
+Voices include `casual_male`, `casual_female`, `cheerful_female`, `neutral_male`,
+`neutral_female` (English) plus `fr_*`, `es_*`, `de_*`, `it_*`, `pt_*`, `nl_*`, `ar_male`,
+`hi_*`. Pick the quantization with `VOXTRAL_REPO` (default `…-mlx-4bit`; `…-mlx-6bit` /
+`…-mlx-bf16` trade size for quality) and set a default with `TTS_ENGINE=voxtral` /
+`VOXTRAL_VOICE=…`.
+
+> **Notes.** Voxtral is heavier and slower than Kokoro-82M (it's a 4B model), so expect longer
+> generation. Its weights are **CC BY-NC 4.0 (non-commercial)** — Kokoro (Apache-2.0) remains the
+> default. MLX runs on the GPU (Metal), so this path is unaffected by CoreML/ANE issues.
+
 ## Controlling generation
 
 While a book is generating, the player's banner gives you live controls:
@@ -105,8 +138,12 @@ Finished books can be played **offline** in the companion **Flutter app**
 `manifest.json` + the chapter MP3s — and gets onto the phone two ways:
 
 - **Download over Wi-Fi** — start the server so your phone can reach it
-  (`HOST=0.0.0.0 ./scripts/run.sh`), open the app, tap **Connect**, enter your
-  computer's address (e.g. `192.168.1.20:8000`), and download any *ready* book.
+  (`HOST=0.0.0.0 ./scripts/run.sh`) and open the app's **Connect** screen. With both
+  on the same Wi-Fi you don't need any IP address: this computer **appears in the list
+  automatically** (mDNS) — just tap it. Can't see it? Click **📱 Connect your phone** in
+  the web player's top bar and **scan the QR code**, or type the address by hand as before
+  (`192.168.1.20:8000`). Then download any *ready* book. (The startup log and the QR panel
+  both print the exact address to use.)
 - **Import a file** — build the package on your computer and move it to the phone
   (AirDrop / Files / USB / cloud), then **Import** it in the app:
 
@@ -122,6 +159,51 @@ The app stores books on the device and plays them fully offline, with the same
 chapter/topic navigation, full-text search, synced sentence highlighting, resume,
 speed/volume, and background playback with lock-screen controls. See
 [`mobile/README.md`](mobile/README.md) to build and run it.
+
+## Optional cloud sync (Firebase)
+
+By default the reader is fully local — progress lives in your browser and notes in each book's
+`notes.json`. If you want your **listening position (synced per sentence)** and your
+**notes & highlights** to follow you across the web player and the phone app, you can turn on
+optional sync backed by **your own** [Firebase](https://firebase.google.com) project. It stays
+off — and the app behaves exactly as before — until you add a config file.
+
+**One-time setup:**
+
+1. Create a Firebase project, then enable **Firestore Database** and the **Email/Password**
+   sign-in provider (Authentication → Sign-in method).
+2. In *Project settings → Your apps*, add a **Web app** and copy its config values.
+3. Copy `web/firebase-config.example.js` → `web/firebase-config.js` and paste your values.
+   (These are public client identifiers, not secrets — access is controlled by the rules
+   below, and `firebase-config.js` is git-ignored.)
+4. Paste these **Firestore security rules** (Firestore → Rules) so each account only ever
+   touches its own data:
+
+   ```
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /users/{uid}/{document=**} {
+         allow read, write: if request.auth != null && request.auth.uid == uid;
+       }
+     }
+   }
+   ```
+
+5. Restart the player, click **☁ Sign in** (top bar), and sign in with the **same email** on
+   every device.
+
+**Data model** (per account): `users/{uid}/books/{bookId}` holds the progress
+`{ci, t, si, frac, updated, device}`; `users/{uid}/books/{bookId}/notes/{noteId}` holds one
+doc per note. `notes.json` is kept as an identical local mirror so exports and `.abk` packaging
+keep working; note deletions use soft-delete tombstones so they propagate without reappearing.
+
+**Good to know:**
+
+- The **first load** needs internet (the Firebase SDK loads from Google's CDN and you sign in);
+  Firestore's offline cache then covers subsequent offline use.
+- Sync is **additive** — signed out, or with no `firebase-config.js`, nothing changes.
+- The phone app uses the **same** Firebase project — see [`mobile/README.md`](mobile/README.md).
 
 ## How it works
 
@@ -182,7 +264,9 @@ UK (`KOKORO_LANG=b`): `bf_emma`, `bm_george`.
 | `↑` / `↓` | previous / next sentence |
 | `[` / `]` | previous / next chapter |
 | `/` | focus search |
-| `Esc` | clear search / back to library |
+| `B` / `N` | bookmark / add a note at the current spot |
+| `F` | reading mode (full screen) |
+| `Esc` | exit reading mode / clear search / back to library |
 
 ## Troubleshooting
 
@@ -211,6 +295,8 @@ app/            FastAPI backend + ingest pipeline
   export.py        package a ready book into a .abk + CLI
   server.py        API + static serving
 web/            no-build vanilla JS player (index.html, app.js, styles.css)
+  sync.js          optional Firebase (Firestore) progress + notes sync
+  firebase-config.example.js   copy to firebase-config.js to enable sync
 mobile/         Flutter app (Android) — plays packaged .abk books offline
 library/inbox/  drop PDFs here
 library/books/  generated audiobooks
