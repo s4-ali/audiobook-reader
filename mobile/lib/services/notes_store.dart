@@ -12,8 +12,7 @@ import 'library_store.dart';
 /// bundled inside an `.abk` loads as-is, and the Markdown/Obsidian exporters below mirror
 /// `app/notes.py` output. Persistence is atomic (temp file + rename).
 class NotesStore {
-  final LibraryStore library;
-  NotesStore(this.library);
+  NotesStore();
 
   static const int version = 1;
   static const List<String> colors = ['yellow', 'green', 'blue', 'pink', 'purple'];
@@ -25,12 +24,48 @@ class NotesStore {
     return '${d.toIso8601String().split('.').first}Z';
   }
 
-  Future<File> _file(String bookId) async =>
-      File('${(await library.bookDir(bookId)).path}/notes.json');
+  /// Merge local notes with remote note docs (raw maps that may be soft-delete tombstones) by
+  /// `updated`, last-write-wins — the Dart twin of `app/notes.py` `merge_notes`. Returns the
+  /// live notes and the set of ids whose winner is a tombstone (drop those locally). Ties go to
+  /// the remote map (passed second), matching the server's `>=`.
+  static (List<Note>, Set<String>) mergeById(
+      List<Note> local, List<Map<String, dynamic>> remote) {
+    String stamp(Map<String, dynamic> m) =>
+        (m['updated'] ?? m['created'] ?? '').toString();
+    final win = <String, Map<String, dynamic>>{};
+    void consider(Map<String, dynamic> m) {
+      final id = (m['id'] ?? '').toString();
+      if (id.isEmpty) return;
+      final prev = win[id];
+      if (prev == null || stamp(m).compareTo(stamp(prev)) >= 0) win[id] = m;
+    }
 
-  Future<List<Note>> load(String bookId) async {
+    for (final n in local) {
+      consider(n.toJson());
+    }
+    for (final m in remote) {
+      consider(m);
+    }
+    final live = <Note>[];
+    final dead = <String>{};
+    for (final m in win.values) {
+      if (m['deleted'] == true) {
+        dead.add((m['id'] ?? '').toString());
+      } else {
+        live.add(Note.fromJson(m));
+      }
+    }
+    return (live, dead);
+  }
+
+  // notes.json lives in the book's actual on-device folder — [InstalledBook.dir], not a path
+  // rebuilt from the id. That keeps a hand-dropped book (whose folder name may differ from the
+  // manifest id) reading/writing its own notes.
+  File _file(InstalledBook b) => File('${b.dir.path}/notes.json');
+
+  Future<List<Note>> load(InstalledBook b) async {
     try {
-      final f = await _file(bookId);
+      final f = _file(b);
       if (!await f.exists()) return [];
       return _ordered(Note.listFromDoc(await f.readAsString()));
     } catch (_) {
@@ -38,10 +73,10 @@ class NotesStore {
     }
   }
 
-  Future<void> save(String bookId, List<Note> notes) async {
-    final f = await _file(bookId);
+  Future<void> save(InstalledBook b, List<Note> notes) async {
+    final f = _file(b);
     final doc = {
-      'book': bookId,
+      'book': b.book.id,
       'version': version,
       'notes': _ordered(notes).map((n) => n.toJson()).toList(),
     };
