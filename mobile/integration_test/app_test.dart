@@ -12,6 +12,8 @@ import 'package:audiobook_player/main.dart';
 import 'package:audiobook_player/services/library_store.dart';
 import 'package:audiobook_player/services/player_controller.dart';
 import 'package:audiobook_player/services/settings_store.dart';
+import 'package:audiobook_player/services/sync_store.dart';
+import 'package:audiobook_player/services/theme_controller.dart';
 import 'package:audiobook_player/services/transfer.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -95,7 +97,11 @@ void main() {
       await Transfer(library).downloadAndInstall(serverUrl, bookId);
     }
 
-    await tester.pumpWidget(AudiobookApp(settings: settings, library: library));
+    await tester.pumpWidget(AudiobookApp(
+        settings: settings,
+        library: library,
+        sync: SyncStore(settings, enabled: false),
+        theme: ThemeController(settings)));
     // No pumpAndSettle: loading spinners are infinite animations that never settle.
     await tester.pump();
     await Future<void>.delayed(const Duration(seconds: 1));

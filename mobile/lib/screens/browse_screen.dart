@@ -1,14 +1,19 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../services/discovery.dart';
 import '../services/library_store.dart';
 import '../services/settings_store.dart';
 import '../services/transfer.dart';
 import '../theme.dart';
 import '../util.dart';
+import 'scan_screen.dart';
 
 /// Connect to the desktop server over the LAN, list its library, and download books
 /// (the `.abk` package) straight onto the device.
+///
+/// Three ways to connect, easiest first: tap a server auto-discovered on the Wi-Fi (mDNS),
+/// scan the QR code the desktop shows, or type the address by hand.
 class BrowseScreen extends StatefulWidget {
   const BrowseScreen({super.key});
 
@@ -22,11 +27,16 @@ class _BrowseScreenState extends State<BrowseScreen> {
   late final LibraryStore _library;
 
   final TextEditingController _url = TextEditingController();
+  final DiscoveryService _discovery = DiscoveryService();
+  List<DiscoveredServer> _found = [];
   List<RemoteBook>? _remote;
   final Set<String> _installed = {};
   final Map<String, double> _progress = {};
   String? _error;
   bool _connecting = false;
+  bool _scanning = false;
+
+  AppPalette get _pal => AppPalette.of(context);
 
   @override
   void initState() {
@@ -36,11 +46,15 @@ class _BrowseScreenState extends State<BrowseScreen> {
     _library = context.read<LibraryStore>();
     _url.text = _settings.serverUrl ?? '';
     _refreshInstalled();
+    _discovery.start((servers) {
+      if (mounted) setState(() => _found = servers);
+    });
     if (_url.text.isNotEmpty) _connect();
   }
 
   @override
   void dispose() {
+    _discovery.stop();
     _url.dispose();
     super.dispose();
   }
@@ -79,6 +93,25 @@ class _BrowseScreenState extends State<BrowseScreen> {
     }
   }
 
+  /// Fill the address field from a discovered server or a scanned QR, then connect.
+  void _connectTo(String url) {
+    _url.text = url;
+    _connect();
+  }
+
+  Future<void> _scan() async {
+    if (_scanning) return;
+    setState(() => _scanning = true);
+    try {
+      final result = await Navigator.of(context).push<String>(
+        MaterialPageRoute(builder: (_) => const ScanScreen()),
+      );
+      if (result != null && result.trim().isNotEmpty) _connectTo(result.trim());
+    } finally {
+      if (mounted) setState(() => _scanning = false);
+    }
+  }
+
   Future<void> _download(RemoteBook b) async {
     final messenger = ScaffoldMessenger.of(context);
     final base = Transfer.normalizeUrl(_url.text);
@@ -111,45 +144,104 @@ class _BrowseScreenState extends State<BrowseScreen> {
       appBar: AppBar(title: const Text('Connect to computer')),
       body: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.all(14),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _url,
-                    keyboardType: TextInputType.url,
-                    autocorrect: false,
-                    decoration: const InputDecoration(
-                      labelText: 'Server address',
-                      hintText: '192.168.1.20:8000',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    onSubmitted: (_) => _connect(),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                FilledButton(
-                  onPressed: _connecting ? null : _connect,
-                  child: _connecting
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2))
-                      : const Text('Connect'),
-                ),
-              ],
-            ),
-          ),
-          if (_error != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Text(_error!, style: const TextStyle(color: cRed)),
-            ),
+          _connectHeader(),
+          const Divider(height: 1),
           Expanded(child: _list()),
         ],
       ),
+    );
+  }
+
+  /// Discovery list + Scan button + manual address field, in a scrollable header so it never
+  /// overflows when the keyboard opens.
+  Widget _connectHeader() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (_found.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.only(left: 2, bottom: 2),
+              child: Text('On your Wi-Fi',
+                  style: TextStyle(
+                      color: _pal.subtext0,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600)),
+            ),
+            ..._found.map(_discoveredTile),
+            _orDivider(),
+          ],
+          OutlinedButton.icon(
+            onPressed: _scanning ? null : _scan,
+            icon: const Icon(Icons.qr_code_scanner),
+            label: const Text('Scan QR code'),
+            style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 12)),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _url,
+                  keyboardType: TextInputType.url,
+                  autocorrect: false,
+                  decoration: const InputDecoration(
+                    labelText: 'Server address',
+                    hintText: '192.168.1.20:8000',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                  onSubmitted: (_) => _connect(),
+                ),
+              ),
+              const SizedBox(width: 10),
+              FilledButton(
+                onPressed: _connecting ? null : _connect,
+                child: _connecting
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Text('Connect'),
+              ),
+            ],
+          ),
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(_error!, style: const TextStyle(color: cRed)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _discoveredTile(DiscoveredServer s) {
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      child: ListTile(
+        leading: Icon(Icons.wifi, color: _pal.accent),
+        title: Text(s.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+        subtitle: Text('${s.host}:${s.port}'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: _connecting ? null : () => _connectTo(s.url),
+      ),
+    );
+  }
+
+  Widget _orDivider() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(children: [
+        Expanded(child: Divider(color: _pal.surface1)),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Text('or', style: TextStyle(color: _pal.subtext0, fontSize: 12)),
+        ),
+        Expanded(child: Divider(color: _pal.surface1)),
+      ]),
     );
   }
 
@@ -160,7 +252,9 @@ class _BrowseScreenState extends State<BrowseScreen> {
         child: Padding(
           padding: EdgeInsets.all(24),
           child: Text(
-            'Run the player on your computer with\nHOST=0.0.0.0 ./scripts/run.sh\nthen enter its address above.',
+            'On the same Wi-Fi, this computer appears above automatically.\n\n'
+            'Otherwise tap “Scan QR code”, or type the address.\n\n'
+            'On the computer, run:  HOST=0.0.0.0 ./scripts/run.sh',
             textAlign: TextAlign.center,
           ),
         ),

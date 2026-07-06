@@ -8,6 +8,7 @@ import 'package:just_audio_background/just_audio_background.dart';
 import '../models/manifest.dart';
 import 'library_store.dart';
 import 'settings_store.dart';
+import 'sync_store.dart';
 
 /// Drives playback for one book: a just_audio playlist of the chapter MP3s, with the
 /// active sentence derived from the playback position (the web player's algorithm), plus
@@ -15,6 +16,20 @@ import 'settings_store.dart';
 class PlayerController extends ChangeNotifier {
   final InstalledBook installed;
   final SettingsStore settings;
+
+  /// Optional cloud sync. Null / not-signed-in => every call here is a no-op (fully local).
+  final SyncStore? sync;
+
+  /// Cross-device auto-follow state: while another device is actively playing and we're idle, we
+  /// mirror its position live (karaoke highlight + scroll) without starting our own playback — and
+  /// never while *we* are playing. Drives the reader's "playing on another device" banner.
+  static const int _followWindowMs = 12000;
+  bool _following = false;
+  String? _followerLabel;
+  Timer? _followStale;
+  // Highest `updated` we've adopted or authored — guards re-adopting stale remote writes (the
+  // `device` field filters our own echo).
+  int _lastUpd = 0;
 
   final AudioPlayer _player = AudioPlayer();
   final List<StreamSubscription<dynamic>> _subs = [];
@@ -32,9 +47,8 @@ class PlayerController extends ChangeNotifier {
   bool _playing = false;
   double _speed = 1.0;
   double _volume = 1.0;
-  int _saveTick = 0;
 
-  PlayerController(this.installed, this.settings);
+  PlayerController(this.installed, this.settings, {this.sync});
 
   Book get book => installed.book;
   bool get ready => _ready;
@@ -46,6 +60,8 @@ class PlayerController extends ChangeNotifier {
   bool get playing => _playing;
   double get speed => _speed;
   double get volume => _volume;
+  bool get following => _following;
+  String? get followingDeviceName => _followerLabel;
 
   Chapter? get currentChapter =>
       (_currentChapter >= 0 && _currentChapter < book.chapters.length)
@@ -87,15 +103,25 @@ class PlayerController extends ChangeNotifier {
       return;
     }
 
-    // Resume where we left off, if the saved chapter is still playable.
+    // Resume from the single source of truth: this book's Firestore doc, read cache-first so it's
+    // instant and works offline (there is no local progress file). It's one shared doc per account
+    // per book, so it already holds the furthest position across web + every device. The realtime
+    // listener wired in _wire() then keeps us live. Wait briefly for the anonymous uid on a cold
+    // first launch so the very first open still resumes.
+    await sync?.awaitUid();
     var initialSource = 0;
     var initialPos = Duration.zero;
-    final saved = settings.loadPosition(book.id);
-    if (saved != null) {
-      final si = _sourceToChapter.indexOf(saved.chapterIndex);
-      if (si >= 0) {
-        initialSource = si;
-        initialPos = Duration(milliseconds: (saved.time * 1000).round());
+    if (sync?.available == true) {
+      final remote = await sync!.readProgress(book.id);
+      if (remote != null) {
+        final ci = (remote['ci'] as num?)?.toInt() ?? 0;
+        final src = _sourceToChapter.indexOf(ci);
+        if (src >= 0) {
+          initialSource = src;
+          initialPos = Duration(
+              milliseconds: (((remote['t'] as num?)?.toDouble() ?? 0) * 1000).round());
+          _lastUpd = (remote['updated'] as num?)?.toInt() ?? 0;
+        }
       }
     }
     _currentChapter = _sourceToChapter[initialSource];
@@ -115,8 +141,19 @@ class PlayerController extends ChangeNotifier {
   void _wire() {
     _subs.add(_player.positionStream.listen((pos) {
       _position = pos;
+      final prevSi = _activeSentence;
       _recomputeActive();
-      if (++_saveTick % 10 == 0) _persist();
+      // Per-sentence cloud sync: push the moment the active sentence advances (debounced in
+      // SyncStore → Firestore, offline-queued). Suppressed while we're mirroring another device, so
+      // following never echoes the followed spot back under our own name.
+      if (!_following && _activeSentence != prevSi && _activeSentence >= 0) {
+        _lastUpd = DateTime.now().millisecondsSinceEpoch;
+        sync?.writeProgress(book.id,
+            ci: _currentChapter,
+            t: _position.inMilliseconds / 1000.0,
+            si: _activeSentence,
+            frac: _progressFraction());
+      }
       notifyListeners();
     }));
     _subs.add(_player.currentIndexStream.listen((srcIdx) {
@@ -125,6 +162,7 @@ class PlayerController extends ChangeNotifier {
       if (ch != _currentChapter) {
         _currentChapter = ch;
         _activeSentence = -1;
+        if (!_following) sync?.flushProgress();
         notifyListeners();
       }
     }));
@@ -136,10 +174,64 @@ class PlayerController extends ChangeNotifier {
     }));
     _subs.add(_player.playerStateStream.listen((st) {
       _playing = st.playing;
-      if (!st.playing) _persist();
+      if (st.playing) {
+        _exitFollow(); // we're the one playing now — stop mirroring another device
+      } else if (!_following) {
+        // Flush our latest spot on pause (unless we're mirroring another device's playback).
+        _enqueueProgress();
+        sync?.flushProgress();
+      }
       notifyListeners();
     }));
+    // Realtime cross-device auto-follow: mirror this book's shared position live. When another
+    // device is actively playing and we're idle, _onRemoteProgress moves our (paused) player to
+    // its spot so the karaoke highlight tracks it; it never moves the spot out from under our own
+    // playback.
+    if (sync?.available == true) {
+      _subs.add(sync!.progressStream(book.id).listen(_onRemoteProgress,
+          onError: (_) {/* e.g. permission revoked on sign-out — degrade to local */}));
+    }
   }
+
+  // A remote progress update arrived on the shared book doc. Ignore our own echo and anything not
+  // newer than what we've adopted; never move while *we* are playing. Otherwise seek our paused
+  // player to the remote spot — the resulting position tick updates the karaoke highlight — and,
+  // when that device is actively playing (a fresh update), stay in follow mode so we keep tracking
+  // it live and show the banner.
+  void _onRemoteProgress(Map<String, dynamic> d) {
+    if ((d['device'] as String?) == settings.clientId) return; // our own echo
+    final remoteUpd = (d['updated'] as num?)?.toInt() ?? 0;
+    if (remoteUpd <= _lastUpd) return; // nothing newer than what we've adopted/authored
+    if (_playing) return; // never hijack our own playback
+    final ci = (d['ci'] as num?)?.toInt() ?? 0;
+    final src = _sourceToChapter.indexOf(ci);
+    if (src < 0) return; // that chapter isn't playable on this device
+    final t = (d['t'] as num?)?.toDouble() ?? 0;
+    _lastUpd = remoteUpd;
+    final fresh = DateTime.now().millisecondsSinceEpoch - remoteUpd < _followWindowMs;
+    _following = fresh;
+    _followerLabel = fresh ? (d['deviceName'] as String?) : null;
+    _followStale?.cancel();
+    // While the other device keeps sending fresh updates we stay in follow; a gap ends it.
+    if (fresh) _followStale = Timer(const Duration(milliseconds: _followWindowMs), _exitFollow);
+    // Move the (paused) player to the remote spot. Writes stay suppressed while _following, so this
+    // never echoes back as ours; if it's a different chapter, the seek switches sources.
+    _player.seek(Duration(milliseconds: (t * 1000).round()), index: src);
+    notifyListeners();
+  }
+
+  // Stop mirroring another device (its updates stopped, or we took over playback / seeking).
+  void _exitFollow() {
+    _followStale?.cancel();
+    _followStale = null;
+    if (!_following && _followerLabel == null) return;
+    _following = false;
+    _followerLabel = null;
+    notifyListeners();
+  }
+
+  /// Reader affordance to leave follow mode (tapping the "playing on another device" banner).
+  void stopFollowing() => _exitFollow();
 
   void _recomputeActive() {
     final ch = currentChapter;
@@ -148,9 +240,23 @@ class PlayerController extends ChangeNotifier {
         : findActiveSentence(ch.sentences, _position.inMilliseconds / 1000.0);
   }
 
-  void _persist() => settings.savePosition(
-      book.id, _currentChapter, _position.inMilliseconds / 1000.0,
-      frac: _progressFraction());
+  // Enqueue the current spot for cloud sync (coalesced in SyncStore → Firestore, offline-queued).
+  void _enqueueProgress() {
+    _lastUpd = DateTime.now().millisecondsSinceEpoch;
+    sync?.writeProgress(book.id,
+        ci: _currentChapter,
+        t: _position.inMilliseconds / 1000.0,
+        si: _activeSentence < 0 ? 0 : _activeSentence,
+        frac: _progressFraction());
+  }
+
+  /// Push the current spot to Firestore now — used by the reader on app-background and when leaving
+  /// the screen. Skipped while mirroring another device (that spot isn't ours to claim).
+  Future<void> flushProgressToSync() async {
+    if (_following) return;
+    _enqueueProgress();
+    await sync?.flushProgress();
+  }
 
   /// Overall progress across the whole book (0..1): the current chapter's global start plus
   /// the in-chapter position, over the book's total duration. Powers the library progress
@@ -174,14 +280,29 @@ class PlayerController extends ChangeNotifier {
   }
 
   // --- transport -----------------------------------------------------------
-  Future<void> togglePlay() => _playing ? _player.pause() : _player.play();
-  Future<void> play() => _player.play();
+  // Any explicit transport action is a "take-over": stop mirroring another device first. During
+  // follow the player already sits at the mirrored spot, so play() simply resumes from there.
+  Future<void> togglePlay() => _playing ? pause() : play();
+  Future<void> play() {
+    _exitFollow();
+    return _player.play();
+  }
   Future<void> pause() => _player.pause();
-  Future<void> seekTo(Duration pos) => _player.seek(pos);
-  Future<void> nextChapter() => _player.seekToNext();
-  Future<void> prevChapter() => _player.seekToPrevious();
+  Future<void> seekTo(Duration pos) {
+    _exitFollow();
+    return _player.seek(pos);
+  }
+  Future<void> nextChapter() {
+    _exitFollow();
+    return _player.seekToNext();
+  }
+  Future<void> prevChapter() {
+    _exitFollow();
+    return _player.seekToPrevious();
+  }
 
   Future<void> nudge(int seconds) async {
+    _exitFollow();
     var target = _position + Duration(seconds: seconds);
     if (target < Duration.zero) target = Duration.zero;
     await _player.seek(target);
@@ -190,6 +311,7 @@ class PlayerController extends ChangeNotifier {
   /// Jump to a chapter (by `book.chapters` position) at an optional in-chapter offset and
   /// start playing — used by the outline, search results, and sentence taps.
   Future<void> goTo(int chapterPos, {double atSeconds = 0, bool startPlaying = true}) async {
+    _exitFollow();
     final si = _sourceToChapter.indexOf(chapterPos);
     if (si < 0) return;
     await _player.seek(Duration(milliseconds: (atSeconds * 1000).round()), index: si);
@@ -212,7 +334,11 @@ class PlayerController extends ChangeNotifier {
 
   @override
   void dispose() {
-    _persist();
+    if (!_following) {
+      _enqueueProgress();
+      sync?.flushProgress(); // fire-and-forget final push
+    }
+    _followStale?.cancel();
     for (final s in _subs) {
       s.cancel();
     }

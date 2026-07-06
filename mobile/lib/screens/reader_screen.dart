@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:share_plus/share_plus.dart';
@@ -12,9 +15,11 @@ import '../services/library_store.dart';
 import '../services/notes_store.dart';
 import '../services/player_controller.dart';
 import '../services/settings_store.dart';
+import '../services/sync_store.dart';
 import '../services/transfer.dart';
 import '../theme.dart';
 import '../util.dart';
+import '../widgets/theme_menu.dart';
 
 /// The player: scrolling chapter text with the active sentence highlighted (karaoke),
 /// tap-a-sentence to seek, an outline + search sheet, and the transport bar. Mirrors the
@@ -28,11 +33,15 @@ class ReaderScreen extends StatefulWidget {
   State<ReaderScreen> createState() => _ReaderScreenState();
 }
 
-class _ReaderScreenState extends State<ReaderScreen> {
+class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver {
   static const _speeds = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
-  static const _tiny = TextStyle(fontSize: 11, color: cSubtext0);
+
+  /// The active theme's swappable palette (reader spans + chrome washes). See [AppPalette].
+  AppPalette get _pal => AppPalette.of(context);
+  TextStyle get _tiny => TextStyle(fontSize: 11, color: _pal.subtext0);
 
   late final PlayerController _c;
+  late final SyncStore _sync;
   final ItemScrollController _scroll = ItemScrollController();
 
   // Per-chapter rendering cache, rebuilt only when the chapter changes.
@@ -46,14 +55,23 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   late final NotesStore _notesStore;
   List<Note> _noteList = [];
+  StreamSubscription<List<Map<String, dynamic>>>? _notesSub;
   final Map<int, String> _hlColor = {}; // sentence index -> color (current chapter only)
   final Map<int, GlobalKey> _paraKeys = {}; // paragraph index -> key (long-press hit-test)
   final Uuid _uuid = const Uuid();
 
+  // Full-screen reading mode.
+  bool _immersive = false;
+  bool _controlsVisible = true;
+  Timer? _hideTimer;
+
   @override
   void initState() {
     super.initState();
-    _c = PlayerController(widget.installed, context.read<SettingsStore>());
+    WidgetsBinding.instance.addObserver(this);
+    _sync = context.read<SyncStore>();
+    _c = PlayerController(widget.installed, context.read<SettingsStore>(),
+        sync: _sync);
     _notesStore = context.read<NotesStore>();
     _loadNotes();
     _c.init().then((_) {
@@ -63,9 +81,23 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _notesSub?.cancel();
+    _hideTimer?.cancel();
+    if (_immersive) {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    }
     _disposeRecognizers();
     _c.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Mirror the web player's visibilitychange→save: push the spot when backgrounded.
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+      _c.flushProgressToSync();
+    }
   }
 
   void _disposeRecognizers() {
@@ -143,42 +175,181 @@ class _ReaderScreenState extends State<ReaderScreen> {
         _ensureCache();
         _maybeAutoScroll();
         final ch = _c.currentChapter!;
-        return Scaffold(
-          appBar: AppBar(
-            title: Text(_c.book.title,
-                maxLines: 1, overflow: TextOverflow.ellipsis),
-            actions: [
-              IconButton(
-                  icon: const Icon(Icons.list),
-                  tooltip: 'Contents',
-                  onPressed: _showOutline),
-              IconButton(
-                  icon: const Icon(Icons.search),
-                  tooltip: 'Search',
-                  onPressed: _showSearch),
-              IconButton(
-                  icon: const Icon(Icons.sticky_note_2_outlined),
-                  tooltip: 'Notes',
-                  onPressed: _showNotes),
-            ],
+        return PopScope(
+          canPop: !_immersive,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop && _immersive) _exitImmersive();
+          },
+          child: Scaffold(
+            appBar: _immersive
+                ? null
+                : AppBar(
+                    title: Text(_c.book.title,
+                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                    actions: [
+                      const ThemeMenuButton(),
+                      IconButton(
+                          icon: const Icon(Icons.fullscreen),
+                          tooltip: 'Reading mode',
+                          onPressed: _enterImmersive),
+                      IconButton(
+                          icon: const Icon(Icons.list),
+                          tooltip: 'Contents',
+                          onPressed: _showOutline),
+                      IconButton(
+                          icon: const Icon(Icons.search),
+                          tooltip: 'Search',
+                          onPressed: _showSearch),
+                      IconButton(
+                          icon: const Icon(Icons.sticky_note_2_outlined),
+                          tooltip: 'Notes',
+                          onPressed: _showNotes),
+                    ],
+                  ),
+            body: _immersive
+                ? _immersiveBody()
+                : Column(
+                    children: [
+                      if (_c.following) _followBanner(),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.fromLTRB(18, 6, 18, 8),
+                        child: Text(ch.title,
+                            style: TextStyle(
+                                fontSize: 13,
+                                color: _pal.subtext0,
+                                fontWeight: FontWeight.w600)),
+                      ),
+                      Expanded(child: _textList()),
+                    ],
+                  ),
+            bottomNavigationBar: _immersive ? null : _transport(ch),
           ),
-          body: Column(
-            children: [
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.fromLTRB(18, 6, 18, 8),
-                child: Text(ch.title,
-                    style: const TextStyle(
-                        fontSize: 13,
-                        color: cSubtext0,
-                        fontWeight: FontWeight.w600)),
-              ),
-              Expanded(child: _textList()),
-            ],
-          ),
-          bottomNavigationBar: _transport(ch),
         );
       },
+    );
+  }
+
+  // --- reading mode --------------------------------------------------------
+  // Full-screen, distraction-free reading: hide the app bar + transport, keep the karaoke
+  // highlight + tap-to-seek. A floating control pill auto-hides after a few idle seconds and
+  // reappears on tap; the sentence tap recognizers still win on words (seek), so a tap toggles
+  // the controls on the gaps/margins.
+  void _enterImmersive() {
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    setState(() {
+      _immersive = true;
+      _controlsVisible = true;
+    });
+    _armHideTimer();
+  }
+
+  void _exitImmersive() {
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    _hideTimer?.cancel();
+    setState(() {
+      _immersive = false;
+      _controlsVisible = true;
+    });
+  }
+
+  void _toggleControls() {
+    setState(() => _controlsVisible = !_controlsVisible);
+    if (_controlsVisible) _armHideTimer();
+  }
+
+  void _armHideTimer() {
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted && _immersive) setState(() => _controlsVisible = false);
+    });
+  }
+
+  Widget _immersiveBody() {
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onTap: _toggleControls,
+      child: Stack(
+        children: [
+          Positioned.fill(child: SafeArea(child: _textList())),
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 28,
+            child: IgnorePointer(
+              ignoring: !_controlsVisible,
+              child: AnimatedOpacity(
+                opacity: _controlsVisible ? 1 : 0,
+                duration: const Duration(milliseconds: 300),
+                child: Center(child: _immersiveControls()),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _immersiveControls() {
+    return Container(
+      decoration: BoxDecoration(
+        color: _pal.surface2,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+              icon: const Icon(Icons.replay_10), onPressed: () => _c.nudge(-10)),
+          IconButton(
+            iconSize: 44,
+            color: _pal.accent,
+            icon: Icon(_c.playing
+                ? Icons.pause_circle_filled
+                : Icons.play_circle_filled),
+            onPressed: _c.togglePlay,
+          ),
+          IconButton(
+              icon: const Icon(Icons.forward_10), onPressed: () => _c.nudge(10)),
+          IconButton(
+              icon: const Icon(Icons.fullscreen_exit),
+              tooltip: 'Exit reading mode',
+              onPressed: _exitImmersive),
+        ],
+      ),
+    );
+  }
+
+  /// Shown while we're mirroring another device's live playback (cross-device auto-follow): the
+  /// karaoke highlight tracks that device in real time. Tap to stop; any transport action also
+  /// takes over.
+  Widget _followBanner() {
+    final who = _c.followingDeviceName;
+    return Material(
+      color: _pal.accent.withValues(alpha: 0.14),
+      child: InkWell(
+        onTap: _c.stopFollowing,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          child: Row(
+            children: [
+              Icon(Icons.graphic_eq, size: 17, color: _pal.accent),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  who != null && who.isNotEmpty
+                      ? 'Playing on $who — following live'
+                      : 'Playing on another device — following live',
+                  style: TextStyle(
+                      color: _pal.accent, fontSize: 12.5, fontWeight: FontWeight.w600),
+                ),
+              ),
+              Text('Tap to stop', style: TextStyle(color: _pal.subtext0, fontSize: 11)),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -200,8 +371,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
             text: '${s.t} ',
             recognizer: _recognizers[s.i],
             style: TextStyle(
-              color: active ? cCrust : cText,
-              backgroundColor: active ? cMauve : (hl != null ? noteWash(hl) : null),
+              color: active ? _pal.crust : _pal.text,
+              backgroundColor: active ? _pal.accent : (hl != null ? noteWash(hl) : null),
             ),
           ));
         }
@@ -229,7 +400,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     return SafeArea(
       top: false,
       child: Container(
-        color: cSurface0,
+        color: _pal.surface0,
         padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -242,7 +413,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   textAlign: TextAlign.center,
-                  style: const TextStyle(color: cSubtext0, fontSize: 12),
+                  style: TextStyle(color: _pal.subtext0, fontSize: 12),
                 ),
               ),
             ),
@@ -277,7 +448,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     onPressed: () => _c.nudge(-10)),
                 IconButton(
                   iconSize: 52,
-                  color: cMauve,
+                  color: _pal.accent,
                   icon: Icon(_c.playing
                       ? Icons.pause_circle_filled
                       : Icons.play_circle_filled),
@@ -295,11 +466,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
             Row(
               children: [
                 const SizedBox(width: 8),
-                const Icon(Icons.speed, size: 18, color: cSubtext0),
+                Icon(Icons.speed, size: 18, color: _pal.subtext0),
                 const SizedBox(width: 4),
                 _speedDropdown(),
                 const Spacer(),
-                const Icon(Icons.volume_up, size: 18, color: cSubtext0),
+                Icon(Icons.volume_up, size: 18, color: _pal.subtext0),
                 SizedBox(
                   width: 130,
                   child: Slider(value: _c.volume, onChanged: _c.setVolume),
@@ -335,12 +506,57 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   // --- notes ---------------------------------------------------------------
   Future<void> _loadNotes() async {
-    final list = await _notesStore.load(_c.book.id);
+    var list = await _notesStore.load(widget.installed);
+    // If signed in, reconcile local notes.json with Firestore (last-write-wins) and keep both
+    // mirrored, then follow live changes.
+    if (_sync.available) {
+      try {
+        final remote = await _sync.pullNotes(_c.book.id);
+        final (merged, _) = NotesStore.mergeById(list, remote);
+        list = merged;
+        await _notesStore.save(widget.installed, merged);
+        // Push notes that are newer locally / missing remotely, so Firestore matches.
+        final remoteById = {for (final m in remote) (m['id'] ?? '').toString(): m};
+        for (final n in merged) {
+          final r = remoteById[n.id];
+          final rUpd = (r?['updated'] ?? '').toString();
+          if (r == null || rUpd.compareTo(n.updated) < 0) {
+            _sync.pushNote(_c.book.id, n);
+          }
+        }
+      } catch (_) {/* offline -> local notes stand; the listener catches up later */}
+    }
     if (!mounted) return;
     setState(() {
       _noteList = list;
       _rebuildHighlights();
     });
+    _subscribeNotes();
+  }
+
+  /// Follow live Firestore note changes from other devices, mirroring them into notes.json.
+  void _subscribeNotes() {
+    _notesSub?.cancel();
+    if (!_sync.available) return;
+    _notesSub = _sync.notesStream(_c.book.id).listen((remote) async {
+      final (merged, _) = NotesStore.mergeById(_noteList, remote);
+      if (_sameNotes(merged, _noteList)) return; // our own echo — nothing changed
+      await _notesStore.save(widget.installed, merged); // keep notes.json mirrored for export/.abk
+      if (!mounted) return;
+      setState(() {
+        _noteList = merged;
+        _rebuildHighlights();
+      });
+    });
+  }
+
+  bool _sameNotes(List<Note> a, List<Note> b) {
+    if (a.length != b.length) return false;
+    final am = {for (final n in a) n.id: n.updated};
+    for (final n in b) {
+      if (am[n.id] != n.updated) return false;
+    }
+    return true;
   }
 
   /// Rebuild the sentence-index → color map for the current chapter.
@@ -356,7 +572,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
-  Future<void> _persistNotes() => _notesStore.save(_c.book.id, _noteList);
+  Future<void> _persistNotes() => _notesStore.save(widget.installed, _noteList);
 
   /// Build the durable anchor fields for a sentence range in the current chapter.
   Note _draftNote(int si, int sj) {
@@ -445,15 +661,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(10),
-                    decoration: const BoxDecoration(
-                      color: cSurface0,
-                      border: Border(left: BorderSide(color: cMauve, width: 3)),
+                    decoration: BoxDecoration(
+                      color: _pal.surface0,
+                      border: Border(left: BorderSide(color: _pal.accent, width: 3)),
                     ),
                     child: Text(base.exact,
                         maxLines: 3,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            color: cSubtext0, fontStyle: FontStyle.italic, fontSize: 13)),
+                        style: TextStyle(
+                            color: _pal.subtext0, fontStyle: FontStyle.italic, fontSize: 13)),
                   ),
                 const SizedBox(height: 12),
                 TextField(
@@ -480,7 +696,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                             color: noteSwatchColors[c],
                             shape: BoxShape.circle,
                             border: Border.all(
-                              color: color == c ? cText : Colors.transparent,
+                              color: color == c ? _pal.text : Colors.transparent,
                               width: 3,
                             ),
                           ),
@@ -538,29 +754,35 @@ class _ReaderScreenState extends State<ReaderScreen> {
       Note? existing, Note base, String body, String tags, String color) async {
     final kind = body.trim().isEmpty ? 'highlight' : 'note';
     final list = [..._noteList];
+    final Note saved;
     if (existing != null) {
-      final idx = list.indexWhere((n) => n.id == existing.id);
-      if (idx >= 0) {
-        list[idx] = existing.copyWith(
-            note: body,
-            tags: _parseTags(tags),
-            color: color,
-            kind: kind,
-            updated: NotesStore.nowIso());
-      }
-    } else {
-      list.add(base.copyWith(
+      saved = existing.copyWith(
           note: body,
           tags: _parseTags(tags),
           color: color,
           kind: kind,
-          updated: NotesStore.nowIso()));
+          updated: NotesStore.nowIso());
+      final idx = list.indexWhere((n) => n.id == existing.id);
+      if (idx >= 0) {
+        list[idx] = saved;
+      } else {
+        list.add(saved);
+      }
+    } else {
+      saved = base.copyWith(
+          note: body,
+          tags: _parseTags(tags),
+          color: color,
+          kind: kind,
+          updated: NotesStore.nowIso());
+      list.add(saved);
     }
     setState(() {
       _noteList = list;
       _rebuildHighlights();
     });
     await _persistNotes();
+    _sync.pushNote(_c.book.id, saved); // cloud mirror; no-op when signed out
   }
 
   Future<void> _deleteNote(Note note) async {
@@ -569,6 +791,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _rebuildHighlights();
     });
     await _persistNotes();
+    _sync.deleteNote(_c.book.id, note.id); // soft-delete tombstone; no-op when signed out
   }
 
   void _jumpToNote(Note n) {
@@ -626,7 +849,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   ),
                 ),
                 ListTile(
-                  leading: const Icon(Icons.add, color: cMauve),
+                  leading: Icon(Icons.add, color: _pal.accent),
                   title: const Text('Add note at current spot'),
                   onTap: () {
                     Navigator.pop(sheetCtx);
@@ -636,9 +859,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 const Divider(height: 1),
                 Expanded(
                   child: ordered.isEmpty
-                      ? const Center(
+                      ? Center(
                           child: Text('No notes yet.',
-                              style: TextStyle(color: cSubtext0)))
+                              style: TextStyle(color: _pal.subtext0)))
                       : ListView.builder(
                           controller: scrollCtrl,
                           itemCount: ordered.length,
@@ -707,7 +930,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _snack('Syncing notes…');
     try {
       final merged = await transfer.syncNotes(url, _c.book.id, _noteList);
-      await _notesStore.save(_c.book.id, merged);
+      await _notesStore.save(widget.installed, merged);
       if (!mounted) return;
       setState(() {
         _noteList = merged;
@@ -826,8 +1049,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                             '${h.nav ? '▸ ' : ''}${h.chapterTitle}',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 12, color: cSubtext0),
+                            style: TextStyle(
+                                fontSize: 12, color: _pal.subtext0),
                           ),
                           subtitle: Text(h.text,
                               maxLines: 2, overflow: TextOverflow.ellipsis),
