@@ -59,9 +59,9 @@ brew install ffmpeg espeak-ng
 # open http://127.0.0.1:8000
 ```
 
-Then click **“+ Add a PDF”**, pick a file and a voice, and press
-**Generate audiobook**. The first run downloads the Kokoro model (~hundreds of
-MB) once. When it finishes, the book opens in the player.
+Then click **“+ Add a book”**, pick a file, a **model** (Kokoro, Voxtral, or the
+silent test engine) and a voice, and press **Generate audiobook**. The first run
+downloads the model (~hundreds of MB) once. When it finishes, the book opens in the player.
 
 > Want to try the player UI immediately without the big download? Run
 > `./scripts/setup.sh` (no `--tts`), start the server, and add a book with the
@@ -105,6 +105,10 @@ non-fiction where tone and prosody matter.
 # narrate with Voxtral instead of Kokoro
 ./scripts/ingest.sh ~/Books/essays.pdf --engine voxtral --voice casual_male
 ```
+
+In the browser you can also just pick **Voxtral** (and its voice) from the **Model**
+dropdown in the *Add a book* dialog — no flags needed; unavailable engines show as
+*not installed*.
 
 Voices include `casual_male`, `casual_female`, `cheerful_female`, `neutral_male`,
 `neutral_female` (English) plus `fr_*`, `es_*`, `de_*`, `it_*`, `pt_*`, `nl_*`, `ar_male`,

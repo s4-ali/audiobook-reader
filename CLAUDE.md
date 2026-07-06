@@ -138,7 +138,9 @@ already-finished chapters and sets manifest `status="cancelled"`; the run is res
 FastAPI. Ingest runs in background threads (`_spawn_job`), with a cached engine
 (`_engine_cache`), an in-memory job registry (`_jobs`), per-job `_controls`, and a
 `_book_jobs` map. **Jobs are in-memory only** — a server restart drops active jobs, but the
-on-disk manifest makes the book resumable. Endpoints: `/api/library`, `/api/ingest` (upload),
+on-disk manifest makes the book resumable. Endpoints: `/api/library`, `/api/ingest` (upload;
+takes an `engine` form field so the browser can choose the TTS engine), `/api/voices` (per-engine
+voice lists + install availability — powers the **Model** picker in the *Add a book* modal),
 `/api/books/{id}/manifest`, control endpoints `pause`/`resume`/`cancel`, and the lightweight
 `/api/books/{id}/genstate` (what the player polls — returns counts + `active`/`paused` so the
 full manifest is only re-fetched when a chapter finishes). Audio + manifests are served via

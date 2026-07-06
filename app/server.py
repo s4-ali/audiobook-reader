@@ -47,6 +47,45 @@ VOICES = [
     {"id": "bm_george", "label": "George (UK, male)"},
 ]
 
+# Curated Voxtral presets for the UI (mirrors app.tts.voxtral_engine.PRESET_VOICES; 9 languages).
+VOXTRAL_VOICES = [
+    {"id": "casual_male", "label": "Casual (EN, male)"},
+    {"id": "casual_female", "label": "Casual (EN, female)"},
+    {"id": "cheerful_female", "label": "Cheerful (EN, female)"},
+    {"id": "neutral_male", "label": "Neutral (EN, male)"},
+    {"id": "neutral_female", "label": "Neutral (EN, female)"},
+    {"id": "fr_male", "label": "French (male)"},
+    {"id": "fr_female", "label": "French (female)"},
+    {"id": "es_male", "label": "Spanish (male)"},
+    {"id": "es_female", "label": "Spanish (female)"},
+    {"id": "de_male", "label": "German (male)"},
+    {"id": "de_female", "label": "German (female)"},
+    {"id": "it_male", "label": "Italian (male)"},
+    {"id": "it_female", "label": "Italian (female)"},
+    {"id": "pt_male", "label": "Portuguese (male)"},
+    {"id": "pt_female", "label": "Portuguese (female)"},
+    {"id": "nl_male", "label": "Dutch (male)"},
+    {"id": "nl_female", "label": "Dutch (female)"},
+    {"id": "ar_male", "label": "Arabic (male)"},
+    {"id": "hi_male", "label": "Hindi (male)"},
+    {"id": "hi_female", "label": "Hindi (female)"},
+]
+
+# UI metadata per engine (label + a one-line note shown under the picker).
+ENGINE_LABELS = {
+    "kokoro": "Kokoro-82M — fast, default",
+    "voxtral": "Voxtral-4B — premium, slower",
+    "dummy": "Dummy — silent test audio",
+}
+ENGINE_NOTES = {
+    "kokoro": "Kokoro-82M, chapter by chapter — start listening as soon as the first chapter is "
+              "ready while the rest finish. The model downloads once on first run.",
+    "voxtral": "Mistral's Voxtral-4B via MLX (Apple Silicon) — higher fidelity across 9 languages, "
+               "but roughly real-time to generate, so a long book takes a while.",
+    "dummy": "Silent placeholder audio with correct timings — for quickly trying the player, no "
+             "model needed.",
+}
+
 # In-memory registries for ingest progress + pause/cancel control.
 _jobs: Dict[str, dict] = {}
 _controls: Dict[str, JobControl] = {}   # job_id -> control
@@ -71,9 +110,40 @@ def api_library():
     return {"books": library.list_books()}
 
 
+def _engine_availability() -> dict:
+    """Which engines can actually run right now (cheap, import-only — no model load)."""
+    import importlib.util
+
+    def present(name: str) -> bool:
+        try:
+            return importlib.util.find_spec(name) is not None
+        except Exception:
+            return False
+
+    return {
+        "kokoro": present("torch") and present("kokoro"),
+        "voxtral": present("mlx_audio") and present("mistral_common"),
+        "dummy": True,
+    }
+
+
 @app.get("/api/voices")
 def api_voices():
-    return {"voices": VOICES, "default": config.DEFAULT_VOICE}
+    avail = _engine_availability()
+    voices_by_engine = {"kokoro": VOICES, "voxtral": VOXTRAL_VOICES, "dummy": []}
+    default_voice_by_engine = {"kokoro": config.DEFAULT_VOICE,
+                               "voxtral": config.VOXTRAL_VOICE, "dummy": "dummy"}
+    engines = [
+        {"id": eid, "label": ENGINE_LABELS[eid], "available": avail[eid],
+         "voices": voices_by_engine[eid], "default_voice": default_voice_by_engine[eid],
+         "note": ENGINE_NOTES[eid]}
+        for eid in ("kokoro", "voxtral", "dummy")
+    ]
+    return {
+        # Back-compat top-level fields (Kokoro), plus the per-engine breakdown the UI uses.
+        "voices": VOICES, "default": config.DEFAULT_VOICE,
+        "default_engine": config.DEFAULT_ENGINE, "engines": engines,
+    }
 
 
 @app.get("/api/health")

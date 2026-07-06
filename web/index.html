@@ -154,6 +154,9 @@
         <input id="pdfFile" type="file"
                accept=".pdf,.epub,application/pdf,application/epub+zip" required />
       </label>
+      <label class="field">Model
+        <select id="engineSelect"></select>
+      </label>
       <div class="row">
         <label class="field">Voice
           <select id="voiceSelect"></select>
@@ -175,9 +178,8 @@
         <button type="submit" id="startIngest" class="primary">Generate audiobook</button>
       </div>
     </form>
-    <p class="hint">Generates locally with Kokoro-82M, chapter by chapter — you can start
-      listening as soon as the first chapter is ready while the rest finish in the
-      background. (The model downloads once on first run.)</p>
+    <p class="hint" id="ingestHint">Generates locally, chapter by chapter — you can start
+      listening as soon as the first chapter is ready while the rest finish in the background.</p>
   </div>
 </div>
 

@@ -1701,18 +1701,51 @@ async function loadHealthWarnings() {
   } catch { el.hidden = true; }
 }
 
+let voicesData = null;   // cached /api/voices payload (engines + their voices)
+
+function fillVoiceOptions(engineId) {
+  const eng = (voicesData?.engines || []).find((e) => e.id === engineId);
+  const sel = $("#voiceSelect");
+  const voices = eng?.voices || [];
+  const defVoice = eng?.default_voice;
+  if (voices.length) {
+    sel.disabled = false;
+    sel.innerHTML = voices.map((v) =>
+      `<option value="${v.id}" ${v.id === defVoice ? "selected" : ""}>${escapeHtml(v.label)}</option>`).join("");
+  } else {
+    // e.g. the dummy engine takes no voice choice
+    sel.disabled = true;
+    sel.innerHTML = `<option value="${escapeHtml(defVoice || "dummy")}">—</option>`;
+  }
+  const hint = $("#ingestHint");
+  if (hint && eng?.note) hint.textContent = eng.note;
+}
+
 async function openModal() {
   loadHealthWarnings();
-  const sel = $("#voiceSelect");
-  if (!sel.options.length) {
+  const engSel = $("#engineSelect");
+  if (!engSel.options.length) {
     try {
-      const { voices, default: def } = await api("/api/voices");
-      sel.innerHTML = voices.map((v) =>
-        `<option value="${v.id}" ${v.id === def ? "selected" : ""}>${escapeHtml(v.label)}</option>`).join("");
-    } catch { sel.innerHTML = `<option value="af_heart">Heart (US, female)</option>`; }
+      voicesData = await api("/api/voices");
+      const engines = voicesData.engines || [];
+      engSel.innerHTML = engines.map((e) =>
+        `<option value="${e.id}" ${e.available ? "" : "disabled"}>` +
+        `${escapeHtml(e.label)}${e.available ? "" : " — not installed"}</option>`).join("");
+      // Prefer the server's default engine; fall back to the first installed one.
+      const ok = (id) => engines.some((e) => e.id === id && e.available);
+      const chosen = ok(voicesData.default_engine)
+        ? voicesData.default_engine
+        : (engines.find((e) => e.available)?.id || voicesData.default_engine);
+      engSel.value = chosen;
+      fillVoiceOptions(chosen);
+    } catch {
+      engSel.innerHTML = `<option value="kokoro">Kokoro-82M</option>`;
+      $("#voiceSelect").innerHTML = `<option value="af_heart">Heart (US, female)</option>`;
+    }
   }
   $("#modal").hidden = false;
 }
+$("#engineSelect").addEventListener("change", (e) => fillVoiceOptions(e.target.value));
 function closeModal() {
   $("#modal").hidden = true;
   $("#ingestProgress").hidden = true;
@@ -1738,6 +1771,7 @@ $("#ingestForm").addEventListener("submit", async (e) => {
   if (!file) return;
   const fd = new FormData();
   fd.append("file", file);
+  fd.append("engine", $("#engineSelect").value);
   fd.append("voice", $("#voiceSelect").value);
   fd.append("speed", $("#ingestSpeed").value);
   $("#startIngest").disabled = true;
