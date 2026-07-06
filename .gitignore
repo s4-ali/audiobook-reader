@@ -4,8 +4,11 @@ __pycache__/
 .DS_Store
 library/inbox/*
 library/books/*
+library/.cache/
 !library/inbox/.gitkeep
 !library/books/.gitkeep
 scratchpad/
 *.abk
 .claude/
+web/firebase-config.js
+mobile/android/app/google-services.json
