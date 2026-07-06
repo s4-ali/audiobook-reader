@@ -106,7 +106,8 @@ def cmd_doctor(args) -> int:
     print(f"  espeak-ng  {yn(t['espeak_ng']['available'])} {t['espeak_ng'].get('path') or 'not found'}")
     print(f"  engine     default={e['default']} · dummy ✓ · kokoro {yn(k['available'])} "
           f"(torch={yn(k['torch'])} kokoro={yn(k['kokoro'])} device={k['device']} mps={k['mps_available']})")
-    print(f"             voxtral {yn(vx['available'])} (mlx-audio={yn(vx['mlx_audio'])}) · {vx['repo']}")
+    print(f"             voxtral {yn(vx['available'])} (mlx-audio={yn(vx['mlx_audio'])} "
+          f"mistral-common={yn(vx['mistral_common'])}) · {vx['repo']}")
     print(f"  audio      {a['configured_format']} → {a['effective_format']} "
           f"({a['mp3_bitrate']} CBR, {a['sample_rate']}Hz)")
     print(f"  pronounce  {'enabled' if pr['enabled'] else 'off'} · {pr['file']}")

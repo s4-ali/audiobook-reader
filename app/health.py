@@ -68,6 +68,8 @@ def health_report() -> dict:
     kokoro_ok = _module_present("kokoro")
     kokoro_ready = torch_ok and kokoro_ok       # the real engine needs both
     mlx_audio_ok = _module_present("mlx_audio")  # the Voxtral engine needs this (Apple Silicon)
+    mistral_common_ok = _module_present("mistral_common")  # ...and Voxtral's tekken tokenizer
+    voxtral_ready = mlx_audio_ok and mistral_common_ok     # the real engine needs both
 
     fmt = config.AUDIO_FORMAT.lower()
     effective_fmt = fmt if (fmt != "mp3" or ffmpeg_ok) else "wav"
@@ -80,8 +82,10 @@ def health_report() -> dict:
         missing = ", ".join(m for m, ok in (("torch", torch_ok), ("kokoro", kokoro_ok)) if not ok)
         warnings.append(f"Default engine is 'kokoro' but {missing} not installed — run "
                         f"./scripts/setup.sh --tts, or ingest with --engine dummy to test.")
-    if config.DEFAULT_ENGINE == "voxtral" and not mlx_audio_ok:
-        warnings.append("Default engine is 'voxtral' but mlx-audio not installed — run "
+    if config.DEFAULT_ENGINE == "voxtral" and not voxtral_ready:
+        miss = ", ".join(m for m, ok in (("mlx-audio", mlx_audio_ok),
+                                         ("mistral-common", mistral_common_ok)) if not ok)
+        warnings.append(f"Default engine is 'voxtral' but {miss} not installed — run "
                         "./scripts/setup.sh --voxtral (Apple Silicon), or ingest with "
                         "--engine dummy/kokoro.")
     if fmt == "mp3" and not ffmpeg_ok:
@@ -105,8 +109,8 @@ def health_report() -> dict:
             "dummy": True,
             "kokoro": {"available": kokoro_ready, "torch": torch_ok, "kokoro": kokoro_ok,
                        "device": config.KOKORO_DEVICE, "mps_available": _mps_available()},
-            "voxtral": {"available": mlx_audio_ok, "mlx_audio": mlx_audio_ok,
-                        "repo": config.VOXTRAL_REPO},
+            "voxtral": {"available": voxtral_ready, "mlx_audio": mlx_audio_ok,
+                        "mistral_common": mistral_common_ok, "repo": config.VOXTRAL_REPO},
         },
         "audio": {"configured_format": fmt, "effective_format": effective_fmt,
                   "mp3_bitrate": config.MP3_BITRATE, "sample_rate": config.SAMPLE_RATE},

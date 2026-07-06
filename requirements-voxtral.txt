@@ -2,4 +2,5 @@
 # Pulls in mlx + mlx-audio; the quantized model (~2.5 GB for 4-bit) downloads on first run.
 # The Voxtral weights are CC BY-NC 4.0 (non-commercial). Kokoro (Apache-2.0) stays the default.
 -r requirements.txt
-mlx-audio>=0.4        # needs a build recent enough to support Voxtral; `pip install -U` is safest
+mlx-audio>=0.4          # needs a build recent enough to support Voxtral; `pip install -U` is safest
+mistral-common[audio]   # Voxtral's tekken tokenizer — mlx-audio's Voxtral loader requires it
