@@ -44,9 +44,31 @@ const state = {
   pendingInitial: false,  // opened a book with no chapter ready yet
   genstate: null,         // latest /genstate response while generating
   notes: [],              // server-backed notes for the open book (see app/notes.py)
+  remotePos: {},          // bookId -> Firestore progress doc (when signed in; see sync.js)
+  syncUser: null,         // {uid,email} when signed in to cloud sync, else null
+  localUpdated: 0,        // ms timestamp of our last local savePos (to dedupe remote echoes)
+  unsubProgress: null,    // Firestore progress listener teardown for the open book
+  unsubNotes: null,       // Firestore notes listener teardown for the open book
+  readingMode: false,     // full-screen distraction-free reading
+  following: false,       // mirroring another device's live playback (cross-device auto-follow)
+  followTimer: null,      // stale timer: drop out of follow if the other device stops updating
 };
 let manifestPoll = null;  // interval while a book is still generating
 let libraryPoll = null;   // interval while the library has generating books
+
+// A stable per-browser id so a device can recognize (and ignore) the echo of its own cloud
+// progress writes when they come back through the Firestore listener.
+const DEVICE_ID = (() => {
+  let d = localStorage.getItem("abk:device");
+  if (!d) { d = (crypto.randomUUID ? crypto.randomUUID() : "d" + Date.now().toString(36)); localStorage.setItem("abk:device", d); }
+  return d;
+})();
+const DEVICE_NAME = "Web";        // human label other devices show in the "playing on…" banner
+const FOLLOW_WINDOW_MS = 12000;   // a remote update within this counts as "actively playing now"
+const signedIn = () => !!(window.abkSync && window.abkSync.enabled && state.syncUser);
+// Signed in with a real (email) account — not the anonymous baseline. Sync is active whenever
+// signedIn() (any uid, incl. anonymous); the account UI keys off this instead.
+const hasAccount = () => !!(state.syncUser && !state.syncUser.isAnonymous);
 
 /* --------------------------------------------------------------- LIBRARY */
 async function loadLibrary() {
@@ -65,15 +87,15 @@ async function loadLibrary() {
       ? `<div class="badge"><span class="spinner"></span>${b.chapters_ready || 0}/${b.n_chapters}</div>`
       : "";
     const pkg = ready
-      ? `<a class="pkg" href="/api/books/${b.id}/package" download title="Download .abk package for the phone app">⤓</a>`
+      ? `<a class="pkg" href="/api/books/${b.id}/package" download title="Download .abk package for the phone app">${icon("download")}</a>`
       : "";
-    const rss = ready ? `<button class="rss" title="Copy podcast RSS feed URL">🎙</button>` : "";
+    const rss = ready ? `<button class="rss" title="Copy podcast RSS feed URL">${icon("rss")}</button>` : "";
     card.innerHTML = `
-      <button class="del" title="Delete">🗑</button>
+      <button class="del" title="Delete">${icon("trash")}</button>
       ${pkg}
       ${rss}
       ${badge}
-      <div class="cover">📖</div>
+      <div class="cover">${icon("book-open")}</div>
       <h3>${escapeHtml(b.title || b.id)}</h3>
       <div class="author">${escapeHtml(b.author || "Unknown")}</div>
       <div class="stats"><span>${b.n_chapters} chapters</span><span>${fmtHrMin(b.duration)}</span>
@@ -88,7 +110,7 @@ async function loadLibrary() {
       const url = `${location.origin}/api/books/${b.id}/feed.xml`;
       if (navigator.clipboard) {
         navigator.clipboard.writeText(url)
-          .then(() => toast("🎙 Podcast feed URL copied — paste it into your podcast app."))
+          .then(() => toast("Podcast feed URL copied — paste it into your podcast app."))
           .catch(() => toast(url));
       } else { toast(url); }
     });
@@ -96,8 +118,7 @@ async function loadLibrary() {
       e.stopPropagation();
       if (confirm(`Delete "${b.title}" and its audio?`)) {
         await fetch(`/api/books/${b.id}`, { method: "DELETE" });
-        localStorage.removeItem(`abk:pos:${b.id}`);   // drop saved position + bookmarks too
-        localStorage.removeItem(`abk:bm:${b.id}`);
+        localStorage.removeItem(`abk:bm:${b.id}`);   // drop this book's bookmarks (progress is cloud-only now)
         loadLibrary();
       }
     });
@@ -137,9 +158,9 @@ function renderContinue() {
   sec.hidden = false;
   sec.innerHTML = `
     <div class="continue-card">
-      <div class="cc-cover">📖</div>
+      <div class="cc-cover">${icon("book-open")}</div>
       <div class="cc-body">
-        <div class="cc-label">▶ Continue listening</div>
+        <div class="cc-label">${icon("play")} Continue listening</div>
         <h3>${escapeHtml(b.title || b.id)}</h3>
         <div class="cc-sub">Chapter ${(p.ci || 0) + 1} of ${b.n_chapters} · ${pct}%</div>
         <div class="cc-bar"><div class="cc-fill" style="width:${pct}%"></div></div>
@@ -154,7 +175,10 @@ function showLibrary() {
   stopGenPoll();
   resetSleep();       // disarm any running sleep timer when leaving the reader
   savePos();          // capture the exact spot before clearing reader state (the async
+  window.abkSync?.flushProgress?.();   // push that spot to the cloud now, not 1.5s later
   audio.pause();      // 'pause' handler would otherwise run after bookId is nulled)
+  teardownBookSync();
+  if (state.readingMode) exitReadingMode();
   state.bookId = null; state.manifest = null; state.waitingForNext = null; state.genstate = null;
   state.notes = []; hideNotePopover(); $("#notesPanel").hidden = true;
   $("#libraryView").hidden = false;
@@ -162,7 +186,8 @@ function showLibrary() {
   $("#player").hidden = true;
   $("#backBtn").hidden = true;
   $("#bookMeta").textContent = "";
-  loadLibrary().then(() => { state.anyGenerating ? startLibraryPolling() : stopLibraryPolling(); });
+  refreshRemoteProgress().finally(() =>
+    loadLibrary().then(() => { state.anyGenerating ? startLibraryPolling() : stopLibraryPolling(); }));
 }
 
 function startLibraryPolling() {
@@ -195,6 +220,10 @@ async function openBook(bookId, opts = {}) {
   updateGenBanner();
   await loadNotes(bookId);
 
+  // Pull this book's cloud progress first so the resume point can reflect another device.
+  if (signedIn() && !state.remotePos[bookId]) {
+    try { const rp = await window.abkSync.fetchProgress(bookId); if (rp) state.remotePos[bookId] = rp; } catch (e) {}
+  }
   const pos = loadPos(bookId);
   const chapters = m.chapters;
   // Restart a fully-heard book from the top — but only when it's done generating (a
@@ -218,6 +247,7 @@ async function openBook(bookId, opts = {}) {
   await pollGenState(bookId);
   if (state.genstate && (state.genstate.active || state.genstate.manifest_status === "generating"))
     startGenPoll(bookId);
+  setupBookSync(bookId);   // cloud progress + notes listeners (no-op unless signed in)
 }
 
 function updateBookMeta() {
@@ -240,7 +270,7 @@ function updateGenBanner() {
 
   let body = "", actions = "";
   if (active && paused) {
-    body = `<span class="gb-ico">⏸</span>Paused — <b>${ready}/${total}</b>`;
+    body = `<span class="gb-ico">${icon("pause")}</span>Paused — <b>${ready}/${total}</b>`;
     actions = `<button class="gb-btn" data-act="resume">Resume</button>
                <button class="gb-btn danger" data-act="cancel">Cancel</button>`;
   } else if (active && g && g.cancelling) {
@@ -252,7 +282,7 @@ function updateGenBanner() {
   } else if (mstatus === "generating" || mstatus === "partial" || mstatus === "cancelled") {
     const label = mstatus === "cancelled" ? "Generation cancelled"
                 : mstatus === "partial" ? "Generation incomplete" : "Generation stopped";
-    body = `<span class="gb-ico">⏹</span>${label} — <b>${ready}/${total}</b>`;
+    body = `<span class="gb-ico">${icon("stop")}</span>${label} — <b>${ready}/${total}</b>`;
     actions = `<button class="gb-btn" data-act="resume">Resume generating</button>`;
   } else {
     el.hidden = true; return;  // fully ready
@@ -331,7 +361,7 @@ function renderOutline() {
     const row = document.createElement("div");
     row.className = "ch" + (ready ? "" : errored ? " pending error" : " pending");
     row.dataset.ci = ci;
-    const right = ready ? fmtTime(ch.duration) : errored ? "⚠" : "⏳";
+    const right = ready ? fmtTime(ch.duration) : errored ? icon("alert") : icon("clock");
     row.innerHTML = `<span>${escapeHtml(ch.title)}</span><span class="dur">${right}</span>`;
     row.addEventListener("click", () => {
       if (ready) loadChapter(ci, 0, true);
@@ -433,6 +463,9 @@ function setActiveSentence(si) {
     scrollIntoViewIfNeeded(el);
     $("#npSentence").textContent = state.sentences[si].t;
   }
+  // Per-sentence progress: record + cloud-mirror the moment the active sentence advances
+  // (not while scrubbing — the 'change' handler saves the landing spot instead).
+  if (!state.isScrubbing) savePos();
 }
 
 function scrollIntoViewIfNeeded(el) {
@@ -466,13 +499,13 @@ audio.addEventListener("loadedmetadata", () => {
   pendingSeek = 0; pendingPlay = false;
 });
 
-audio.addEventListener("play", () => { $("#playBtn").textContent = "❚❚"; });
-audio.addEventListener("pause", () => { $("#playBtn").textContent = "▶"; savePos(); });
+audio.addEventListener("play", () => { $("#playBtn").innerHTML = icon("pause"); });
+audio.addEventListener("pause", () => { $("#playBtn").innerHTML = icon("play"); savePos(); window.abkSync?.flushProgress?.(); });
 audio.addEventListener("ended", () => {
   savePos();
   if (sleepTimer.endOfChapter) {
     resetSleep();
-    toast("😴 End of chapter — paused.");
+    toast("End of chapter — paused.");
     return;                       // sleep armed for chapter-end: stop instead of advancing
   }
   const next = state.ci + 1;
@@ -487,6 +520,7 @@ audio.addEventListener("ended", () => {
 });
 
 function seekTo(t, play = false) {
+  exitFollow();   // any deliberate seek is a take-over from cross-device follow
   if (isFinite(audio.duration)) {
     audio.currentTime = Math.min(t, audio.duration - 0.05);
     if (play && audio.paused) audio.play().catch(() => {});
@@ -496,11 +530,11 @@ function seekTo(t, play = false) {
 }
 
 /* --------------------------------------------------------------- transport */
-$("#playBtn").addEventListener("click", () => audio.paused ? audio.play() : audio.pause());
+$("#playBtn").addEventListener("click", () => { exitFollow(); audio.paused ? audio.play() : audio.pause(); });
 $("#back10Btn").addEventListener("click", () => seekTo(Math.max(0, audio.currentTime - 10)));
 $("#fwd10Btn").addEventListener("click", () => seekTo(audio.currentTime + 10));
-$("#prevChBtn").addEventListener("click", () => loadChapter(state.ci - 1, 0, true));
-$("#nextChBtn").addEventListener("click", () => loadChapter(state.ci + 1, 0, true));
+$("#prevChBtn").addEventListener("click", () => { exitFollow(); loadChapter(state.ci - 1, 0, true); });
+$("#nextChBtn").addEventListener("click", () => { exitFollow(); loadChapter(state.ci + 1, 0, true); });
 $("#backBtn").addEventListener("click", showLibrary);
 
 const seekBar = $("#seekBar");
@@ -509,8 +543,10 @@ seekBar.addEventListener("input", () => {
   $("#curTime").textContent = fmtTime(Number(seekBar.value));
 });
 seekBar.addEventListener("change", () => {
+  exitFollow();   // scrubbing is a take-over from cross-device follow
   audio.currentTime = Number(seekBar.value);
   state.isScrubbing = false;
+  savePos();   // capture the landing spot immediately (per-sentence sync included)
 });
 
 $("#rateSelect").addEventListener("change", (e) => {
@@ -559,7 +595,7 @@ function fireSleep() {
   audio.volume = base;          // restore so the next play is at full volume
   $("#volBar").value = base;
   sleepSelect.value = "0";
-  toast("😴 Sleep timer reached — paused.");
+  toast("Sleep timer reached — paused.");
 }
 
 sleepSelect.addEventListener("change", (e) => {
@@ -568,7 +604,7 @@ sleepSelect.addEventListener("change", (e) => {
   if (v === "0") return;
   if (v === "chapter") {
     sleepTimer.endOfChapter = true;
-    toast("😴 Will pause at the end of this chapter.");
+    toast("Will pause at the end of this chapter.");
     return;
   }
   sleepTimer.baseVol = audio.volume;
@@ -611,7 +647,7 @@ const runSearch = debounce((q) => {
     const snip = (a > 0 ? "…" : "") +
       escapeHtml(t.slice(a, idx)) + "<mark>" + escapeHtml(t.slice(idx, idx + q.length)) +
       "</mark>" + escapeHtml(t.slice(idx + q.length, b)) + (b < t.length ? "…" : "");
-    const loc = (it.type === "nav" ? "▸ " : "") +
+    const loc = (it.type === "nav" ? icon("chevron-right", "loc-ico") + " " : "") +
       escapeHtml(state.manifest.chapters[it.ci].title) + " · " + fmtTime(it.time);
     return `<div class="res" data-ci="${it.ci}" data-time="${it.time}">
               <div class="loc">${loc}</div><div>${snip}</div></div>`;
@@ -629,9 +665,10 @@ function clearSearch() {
 }
 
 /* ------------------------------------------------------------- persistence */
-// Resume points live per-book in localStorage as { ci, t, frac, updated }: chapter index,
-// in-chapter seconds, overall progress 0..1, and a save timestamp (used to pick the most
-// recently played book for the "Continue listening" card).
+// Resume points live only in Firestore as { ci, t, si, frac, updated } (chapter index, in-chapter
+// seconds, active sentence, overall progress 0..1, and a save timestamp used to order the
+// "Continue listening" card). There is no localStorage copy — Firestore's offline cache is the
+// local store, so resume + realtime cross-device follow run off one mechanism (see sync.js).
 // Seconds of audio before chapter `ci` in playback (array) order. We sum durations rather
 // than trust each chapter's `start_global`, which reflects *generation* order and is wrong
 // for books built with --resume (a regenerated chapter carries a later run's offset).
@@ -643,21 +680,38 @@ function chapterStart(m, ci) {
 
 function savePos() {
   if (!state.bookId || state.ci < 0 || !state.manifest) return;
+  if (state.following) return;   // mirroring another device — don't claim its spot as ours
   const m = state.manifest;
   // While restoring (before loadedmetadata seeks) audio.currentTime is still 0 but the
   // intended time lives in pendingSeek — prefer it so we never clobber a good position.
   const t = audio.currentTime || pendingSeek || 0;
   const total = m.total_duration || 0;
   const frac = total > 0 ? Math.min(1, (chapterStart(m, state.ci) + t) / total) : 0;
-  localStorage.setItem(`abk:pos:${state.bookId}`,
-    JSON.stringify({ ci: state.ci, t, frac, updated: Date.now() }));
+  // The active sentence — the per-sentence granularity we sync. Fall back to a lookup when
+  // playback hasn't set one yet (e.g. saving right after a seek/restore).
+  const si = state.activeSi >= 0 ? state.activeSi : Math.max(0, findActiveIndex(t));
+  const updated = Date.now();
+  state.localUpdated = updated;
+  const pos = { ci: state.ci, t, si, frac, updated };
+  // Single source of truth: Firestore (debounced/coalesced in sync.js, with an offline cache) —
+  // there is no localStorage copy; the on-disk cache IS the local copy. `device`/`deviceName`
+  // stamp who wrote it, so other devices ignore our echo and can label the "playing on…" banner.
+  window.abkSync?.pushProgress?.(state.bookId, { ...pos, device: DEVICE_ID, deviceName: DEVICE_NAME });
 }
+// Resume point comes only from Firestore now (mirrored into state.remotePos: cache-first at open
+// time, then kept live by the realtime listener). No localStorage — the offline cache is the
+// local copy. Empty object when we have nothing for this book yet.
 function loadPos(bookId) {
-  try { return JSON.parse(localStorage.getItem(`abk:pos:${bookId}`)) || {}; }
-  catch { return {}; }
+  const remote = state.remotePos[bookId];
+  if (remote && remote.updated != null) {
+    return { ci: remote.ci, t: remote.t, si: remote.si, frac: remote.frac, updated: remote.updated };
+  }
+  return {};
 }
-window.addEventListener("beforeunload", savePos);
-document.addEventListener("visibilitychange", () => { if (document.hidden) savePos(); });
+window.addEventListener("beforeunload", () => { savePos(); window.abkSync?.flushProgress?.(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { savePos(); window.abkSync?.flushProgress?.(); }
+});
 
 /* --------------------------------------------------------------- bookmarks */
 // Per-book bookmarks in localStorage as [{ ci, t, ch, snip, created }] — the chapter index,
@@ -679,7 +733,7 @@ function addBookmark() {
   list.sort((a, b) => (a.ci - b.ci) || (a.t - b.t));   // keep in reading order
   saveBookmarks(state.bookId, list);
   renderBookmarks();
-  toast("🔖 Bookmark added.");
+  toast("Bookmark added.");
 }
 
 function renderBookmarks() {
@@ -687,14 +741,14 @@ function renderBookmarks() {
   const list = state.bookId ? loadBookmarks(state.bookId) : [];
   if (!list.length) { panel.hidden = true; panel.innerHTML = ""; return; }
   panel.hidden = false;
-  panel.innerHTML = `<div class="bm-head">🔖 Bookmarks · ${list.length}</div>` +
+  panel.innerHTML = `<div class="bm-head">${icon("bookmark")} Bookmarks · ${list.length}</div>` +
     list.map((b, i) => `
       <div class="bm" data-idx="${i}">
         <div class="bm-main">
           <div class="bm-loc">${escapeHtml(b.ch || "")} · ${fmtTime(b.t)}</div>
           ${b.snip ? `<div class="bm-snip">${escapeHtml(b.snip)}</div>` : ""}
         </div>
-        <button class="bm-del" title="Remove bookmark">✕</button>
+        <button class="bm-del" title="Remove bookmark">${icon("x")}</button>
       </div>`).join("");
   $$(".bm", panel).forEach((el) => {
     const i = Number(el.dataset.idx);
@@ -787,7 +841,7 @@ function applyHighlights() {
         if (last) {
           const mark = document.createElement("sup");
           mark.className = "note-marker";
-          mark.textContent = "✎";
+          mark.innerHTML = icon("pen");
           mark.title = "Edit note";
           mark.addEventListener("click", (e) => { e.stopPropagation(); openNoteEditor({ note }); });
           last.after(mark);
@@ -870,19 +924,37 @@ $("#notePopNote").addEventListener("mousedown", (e) => {
 
 /* --- create / persist --- */
 async function saveNewNote(payload) {
-  const temp = { ...payload, id: "tmp:" + Date.now(), tags: payload.tags || [] };
-  temp.kind = (payload.note || "").trim() ? "note" : "highlight";
+  const on = signedIn();
+  const now = window.abkSync?.isoNow ? window.abkSync.isoNow() : new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  const tags = Array.isArray(payload.tags) ? payload.tags : parseTags(payload.tags || "");
+  const kind = (payload.note || "").trim() ? "note" : "highlight";
+  // When signed in, mint the id client-side so notes.json and the Firestore doc share it
+  // (POST /notes reassigns ids; POST /notes/sync honors ours). Offline keeps the tmp: id.
+  const id = on ? (crypto.randomUUID ? crypto.randomUUID()
+                                     : "n" + Date.now().toString(36) + Math.random().toString(16).slice(2))
+                : "tmp:" + Date.now();
+  const temp = { ...payload, id, tags, kind, created: now, updated: now };
   state.notes.push(temp);
   applyHighlights(); renderNotes();
   try {
-    const saved = await api(`/api/books/${state.bookId}/notes`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
-    });
-    const i = state.notes.findIndex((n) => n.id === temp.id);
+    let saved;
+    if (on) {
+      const record = { ...payload, tags, id, kind, created: now, updated: now };
+      const res = await api(`/api/books/${state.bookId}/notes/sync`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notes: [record] }),
+      });
+      saved = (res.notes || []).find((n) => n.id === id) || record;
+      await window.abkSync.putNote(state.bookId, saved);
+    } else {
+      saved = await api(`/api/books/${state.bookId}/notes`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+      });
+    }
+    const i = state.notes.findIndex((n) => n.id === id);
     if (i >= 0) state.notes[i] = saved; else state.notes.push(saved);
-    toast(temp.kind === "note" ? "📝 Note saved." : "Highlighted.");
+    toast(kind === "note" ? "Note saved." : "Highlighted.");
   } catch (e) {
-    state.notes = state.notes.filter((n) => n.id !== temp.id);
+    state.notes = state.notes.filter((n) => n.id !== id);
     toast("Couldn't save note: " + (e.message || "error"));
   }
   applyHighlights(); renderNotes();
@@ -946,6 +1018,7 @@ async function saveNoteEditor() {
       const i = state.notes.findIndex((n) => n.id === id);
       if (i >= 0) state.notes[i] = saved;
       applyHighlights(); renderNotes();
+      if (signedIn()) await window.abkSync.putNote(state.bookId, saved);
     } catch (e) { toast("Couldn't update note: " + (e.message || "error")); loadNotes(state.bookId); }
   } else if (editorDraft) {
     const a = editorDraft;
@@ -968,6 +1041,7 @@ async function removeNote(note) {
   if (String(id).startsWith("tmp:")) return;
   try { await api(`/api/books/${state.bookId}/notes/${id}`, { method: "DELETE" }); }
   catch (e) { toast("Couldn't delete note: " + (e.message || "error")); loadNotes(state.bookId); }
+  if (signedIn()) window.abkSync.deleteNote(state.bookId, id);   // soft-delete tombstone for peers
 }
 
 $("#noteSave").addEventListener("click", saveNoteEditor);
@@ -1001,7 +1075,7 @@ function renderNotes() {
   if (!list.length) { panel.hidden = true; panel.innerHTML = ""; return; }
   panel.hidden = false;
   panel.innerHTML =
-    `<div class="np-head">📝 Notes · ${list.length}<button class="np-export" title="Export notes">⤓ Export</button></div>` +
+    `<div class="np-head"><span class="np-head-title">${icon("note")} Notes · ${list.length}</span><button class="np-export text-icon" title="Export notes">${icon("download")} Export</button></div>` +
     list.map((n) => {
       const chTitle = (state.manifest.chapters[n.ch] || {}).title || `Chapter ${n.ch + 1}`;
       const body = (n.note || "").trim();
@@ -1013,9 +1087,9 @@ function renderNotes() {
           ${body ? `<div class="note-body">${escapeHtml(body)}</div>` : ""}
           <div class="note-loc">${escapeHtml(chTitle)} · ${fmtTime(n.s)}</div>
           ${tags ? `<div class="note-tags">${tags}</div>` : ""}
-          ${n._orphan ? `<div class="note-orphan">⚠ passage moved — jump by time</div>` : ""}
+          ${n._orphan ? `<div class="note-orphan text-icon">${icon("alert")} passage moved — jump by time</div>` : ""}
         </div>
-        <button class="note-del" title="Delete note">✕</button>
+        <button class="note-del" title="Delete note">${icon("x")}</button>
       </div>`;
     }).join("");
   $(".np-export", panel).addEventListener("click", (e) => {
@@ -1030,6 +1104,284 @@ function renderNotes() {
   });
 }
 
+/* ------------------------------------------------------------ cloud sync */
+// Optional Firebase sync (see web/sync.js). When signed in, Firestore is the shared source of
+// truth for progress + notes and notes.json is kept as an identical mirror (so exports/.abk
+// keep working). Everything here is a no-op when signed out — the app stays fully local.
+const noteStamp = (n) => String((n && (n.updated || n.created)) || "");
+const notesSig = (list) => (list || []).map((n) => n.id + ":" + noteStamp(n)).sort().join("|");
+
+// Merge two note lists by id, newest `updated` wins (ties → `b`); split into live notes and
+// the ids whose winner is a soft-delete tombstone. Mirrors app/notes.py merge_notes semantics.
+function mergeNotesById(a, b) {
+  const win = new Map();
+  const consider = (n) => {
+    if (!n || !n.id) return;
+    const prev = win.get(n.id);
+    if (!prev || noteStamp(n) >= noteStamp(prev)) win.set(n.id, n);
+  };
+  (a || []).forEach(consider);
+  (b || []).forEach(consider);
+  const live = [], deadIds = new Set();
+  for (const n of win.values()) { if (n.deleted) deadIds.add(n.id); else live.push(n); }
+  return { live, deadIds };
+}
+
+async function refreshRemoteProgress() {
+  if (!signedIn()) { state.remotePos = {}; return; }
+  try { state.remotePos = await window.abkSync.fetchAllProgress(); } catch { state.remotePos = {}; }
+}
+
+// One-time reconcile of a book's server notes.json with its Firestore notes, then keep both
+// mirrored. Called when a signed-in user opens a book.
+async function reconcileNotes(bookId) {
+  if (!signedIn()) return;
+  let serverNotes = [];
+  try { serverNotes = (await api(`/api/books/${bookId}/notes`)).notes || []; } catch { serverNotes = []; }
+  let remoteDocs = [];
+  try { remoteDocs = await window.abkSync.fetchNotes(bookId); } catch { remoteDocs = []; }
+  const { live, deadIds } = mergeNotesById(serverNotes, remoteDocs);
+  const remoteById = new Map(remoteDocs.map((d) => [d.id, d]));
+  // Firestore: push only the live winners that are missing or newer remotely; ensure a
+  // tombstone for dead ids not already tombstoned. (Avoids re-writing every note each open.)
+  await Promise.all(live.map((n) => {
+    const r = remoteById.get(n.id);
+    return (!r || noteStamp(r) < noteStamp(n)) ? window.abkSync.putNote(bookId, n) : null;
+  }));
+  await Promise.all([...deadIds].map((id) =>
+    (remoteById.get(id) && remoteById.get(id).deleted) ? null : window.abkSync.deleteNote(bookId, id)));
+  // Server notes.json: merge the live set in, and delete anything the merge marked dead.
+  try {
+    await api(`/api/books/${bookId}/notes/sync`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notes: live }),
+    });
+  } catch (e) { /* server offline — Firestore still holds the truth */ }
+  await Promise.all([...deadIds].map((id) =>
+    fetch(`/api/books/${bookId}/notes/${id}`, { method: "DELETE" }).catch(() => {})));
+  if (state.bookId === bookId) { state.notes = live; renderNotes(); applyHighlights(); }
+}
+
+// Live Firestore notes listener → reflect a peer's changes, mirroring them into notes.json.
+function onRemoteNotes(bookId, docs) {
+  if (state.bookId !== bookId) return;
+  const { live, deadIds } = mergeNotesById(state.notes, docs);
+  const changed = notesSig(live) !== notesSig(state.notes);
+  const deletions = [...deadIds].filter((id) => state.notes.some((n) => n.id === id));
+  if (!changed && !deletions.length) return;   // our own write echoed back — nothing to do
+  deletions.forEach((id) => fetch(`/api/books/${bookId}/notes/${id}`, { method: "DELETE" }).catch(() => {}));
+  state.notes = live;
+  renderNotes(); applyHighlights();
+  if (changed) api(`/api/books/${bookId}/notes/sync`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ notes: live }),
+  }).catch(() => {});
+}
+
+// Live Firestore progress listener → cross-device auto-follow: when another device is actively
+// playing and we're idle/paused, mirror its position live (karaoke highlight + scroll). Never
+// hijacks our own playback.
+function onRemoteProgress(bookId, rp) {
+  if (!rp || state.bookId !== bookId) return;
+  state.remotePos[bookId] = rp;
+  if (rp.device === DEVICE_ID) return;                 // our own echo
+  if ((rp.updated || 0) <= state.localUpdated) return; // not newer than what we've adopted/authored
+  if (!audio.paused) return;                           // never hijack our own playback
+  followRemote(rp);
+}
+
+// Mirror a remote position onto our (paused) view. state.following suppresses our own writes for
+// the whole operation, so the seek's echo never bounces back as ours.
+function followRemote(rp) {
+  const ch = (state.manifest.chapters || [])[rp.ci];
+  if (rp.ci != null && rp.ci !== state.ci && !isReady(ch)) return;  // can't mirror an unready chapter
+  state.localUpdated = rp.updated || 0;
+  setFollowing((Date.now() - (rp.updated || 0)) < FOLLOW_WINDOW_MS, rp.deviceName);
+  if (rp.ci != null && rp.ci !== state.ci) {
+    loadChapter(rp.ci, rp.t || 0, false);
+  } else if (isFinite(audio.duration)) {
+    audio.currentTime = Math.min(rp.t || 0, audio.duration - 0.05);
+  } else {
+    pendingSeek = rp.t || 0;
+  }
+  if (rp.si != null && rp.si >= 0) setActiveSentence(rp.si);
+}
+
+// Enter/refresh follow mode. Always suppresses our writes while mirroring; only shows the banner
+// (and arms the stale timer) when the other device is actively playing (a fresh update). A
+// non-fresh update is a silent resume-adopt — write-suppressed until we take over, no banner.
+function setFollowing(fresh, deviceName) {
+  state.following = true;
+  clearTimeout(state.followTimer);
+  if (fresh) {
+    showFollowBanner(deviceName);
+    state.followTimer = setTimeout(exitFollow, FOLLOW_WINDOW_MS);
+  } else {
+    hideFollowBanner();
+  }
+}
+
+// Leave follow mode — the other device stopped updating, or we took over (any transport action).
+function exitFollow() {
+  clearTimeout(state.followTimer);
+  state.followTimer = null;
+  if (!state.following) return;
+  state.following = false;
+  hideFollowBanner();
+}
+
+function showFollowBanner(name) {
+  const txt = $("#followText"), el = $("#followBanner");
+  if (!el) return;
+  if (txt) txt.textContent = `Playing on ${name || "another device"} — following live`;
+  el.hidden = false;
+}
+function hideFollowBanner() { const el = $("#followBanner"); if (el) el.hidden = true; }
+
+function teardownBookSync() {
+  exitFollow();   // stop mirroring another device when we leave / switch books
+  if (state.unsubProgress) { try { state.unsubProgress(); } catch (e) {} state.unsubProgress = null; }
+  if (state.unsubNotes) { try { state.unsubNotes(); } catch (e) {} state.unsubNotes = null; }
+}
+async function setupBookSync(bookId) {
+  teardownBookSync();
+  if (!signedIn()) return;
+  state.unsubProgress = window.abkSync.watchProgress(bookId, (rp) => onRemoteProgress(bookId, rp));
+  await reconcileNotes(bookId);
+  if (state.bookId === bookId)
+    state.unsubNotes = window.abkSync.watchNotes(bookId, (docs) => onRemoteNotes(bookId, docs));
+}
+
+/* --- account / auth UI --- */
+let authMode = "signin";   // "signin" | "signup" — which form the signed-out modal shows
+
+function updateAccountUI() {
+  const btn = $("#accountBtn");
+  if (!btn) return;
+  if (!window.abkSync || !window.abkSync.enabled) { btn.innerHTML = icon("cloud-off") + " Local"; btn.title = "Cloud sync isn't configured — running locally"; return; }
+  if (hasAccount()) { btn.innerHTML = icon("cloud") + " " + escapeHtml(state.syncUser.email || "Synced"); btn.title = "Cloud sync on — click to manage"; }
+  else { btn.innerHTML = icon("cloud") + " Sign in"; btn.title = "Sign in to sync progress & notes across devices"; }
+}
+
+// Reflect the sign-in / create-account choice across header, confirm field, submit label and
+// the switch line. Called by the tab buttons and the switch link.
+function setAuthMode(mode) {
+  authMode = mode === "signup" ? "signup" : "signin";
+  const up = authMode === "signup";
+  document.querySelectorAll(".auth-tab").forEach((t) => t.classList.toggle("active", t.dataset.mode === authMode));
+  $("#authTitle").textContent = up ? "Create your account" : "Welcome back";
+  $("#authSubtitle").textContent = up
+    ? "Sync your reading progress & notes across every device."
+    : "Sign in to sync your progress & notes across devices.";
+  $("#confirmField").hidden = !up;
+  $("#acctSubmit").textContent = up ? "Create account" : "Sign in";
+  $("#authSwitchText").textContent = up ? "Already have an account?" : "New to Audiobook Reader?";
+  $("#authSwitchBtn").textContent = up ? "Sign in" : "Create an account";
+  $("#acctPassword").setAttribute("autocomplete", up ? "new-password" : "current-password");
+  $("#acctError").hidden = true;
+}
+
+function updateAccountModal() {
+  const inEl = $("#acctSignedIn"), outEl = $("#acctSignedOut");
+  if (!inEl || !outEl) return;
+  const on = hasAccount();
+  outEl.hidden = on; inEl.hidden = !on;
+  if (on) $("#acctWho").textContent = state.syncUser.email || state.syncUser.uid;
+}
+
+function openAccountModal() {
+  if (!window.abkSync || !window.abkSync.enabled) {
+    toast("Cloud sync isn't configured. See the README ‘Optional cloud sync’ section.");
+    return;
+  }
+  updateAccountModal();
+  if (!hasAccount()) {
+    setAuthMode("signin");
+    $("#acctPassword").value = "";
+    $("#acctConfirm").value = "";
+  }
+  $("#accountModal").hidden = false;
+  if (!hasAccount()) setTimeout(() => $("#acctEmail").focus(), 0);
+}
+function closeAccountModal() { $("#accountModal").hidden = true; }
+
+function togglePasswordVisibility() {
+  const pw = $("#acctPassword"), cf = $("#acctConfirm"), btn = $("#pwToggle");
+  const reveal = pw.type === "password";
+  pw.type = cf.type = reveal ? "text" : "password";
+  btn.textContent = reveal ? "Hide" : "Show";
+  btn.setAttribute("aria-label", reveal ? "Hide password" : "Show password");
+}
+
+function authErrorText(e) {
+  const c = (e && e.code) || "";
+  if (c.includes("invalid-credential") || c.includes("wrong-password") || c.includes("user-not-found"))
+    return "Wrong email or password.";
+  if (c.includes("email-already-in-use")) return "That email already has an account — sign in instead.";
+  if (c.includes("weak-password")) return "Password should be at least 6 characters.";
+  if (c.includes("invalid-email")) return "That doesn't look like a valid email.";
+  if (c.includes("too-many-requests")) return "Too many attempts — wait a moment and try again.";
+  if (c.includes("network")) return "Network error — check your connection.";
+  return (e && e.message) || "Couldn't sign in.";
+}
+function showAuthError(msg) { const el = $("#acctError"); el.textContent = msg; el.hidden = false; }
+
+function setAuthBusy(busy) {
+  const up = authMode === "signup";
+  $("#acctSubmit").disabled = busy;
+  $("#acctSubmit").textContent = busy ? (up ? "Creating account…" : "Signing in…") : (up ? "Create account" : "Sign in");
+  $("#acctEmail").disabled = busy;
+  $("#acctPassword").disabled = busy;
+  $("#acctConfirm").disabled = busy;
+  $("#pwToggle").disabled = busy;
+  document.querySelectorAll(".auth-tab").forEach((t) => { t.disabled = busy; });
+}
+
+async function submitAuth() {
+  const up = authMode === "signup";
+  const email = $("#acctEmail").value.trim();
+  const pw = $("#acctPassword").value;
+  $("#acctError").hidden = true;
+  if (!email || !pw) { showAuthError("Enter an email and password."); return; }
+  if (up) {
+    if (pw.length < 6) { showAuthError("Password should be at least 6 characters."); return; }
+    if (pw !== $("#acctConfirm").value) { showAuthError("Those passwords don't match."); return; }
+  }
+  setAuthBusy(true);
+  try {
+    if (up) await window.abkSync.createAccount(email, pw);
+    else await window.abkSync.signIn(email, pw);
+    $("#acctPassword").value = "";
+    $("#acctConfirm").value = "";
+    closeAccountModal();
+    toast(up ? "Account created — syncing progress & notes." : "Signed in — syncing progress & notes.");
+  } catch (e) {
+    showAuthError(authErrorText(e));
+  } finally {
+    setAuthBusy(false);
+  }
+}
+
+async function doSignOut() {
+  try { await window.abkSync.signOut(); } catch (e) {}
+  closeAccountModal();
+  toast("Signed out.");   // drops back to a fresh anonymous session (see sync.js)
+}
+
+// The inversion-of-control surface sync.js calls once auth resolves (see web/sync.js).
+window.ABK = {
+  onAuthChange(user) {
+    state.syncUser = user;
+    updateAccountUI();
+    updateAccountModal();
+    if (user) {
+      refreshRemoteProgress().then(() => { if (!$("#libraryView").hidden) loadLibrary().catch(() => {}); });
+      if (state.bookId) setupBookSync(state.bookId);
+    } else {
+      state.remotePos = {};
+      teardownBookSync();
+    }
+  },
+};
+
 /* ----------------------------------------------------- OS media controls */
 // Wire the page into the OS media session: lock-screen / notification controls, hardware
 // media keys, Bluetooth & car controls, and a system scrubber — all feature-detected so
@@ -1040,13 +1392,13 @@ function setupMediaSession() {
   if (!hasMediaSession) return;
   const ms = navigator.mediaSession;
   const set = (action, fn) => { try { ms.setActionHandler(action, fn); } catch (e) { /* unsupported action */ } };
-  set("play", () => audio.play().catch(() => {}));
+  set("play", () => { exitFollow(); audio.play().catch(() => {}); });
   set("pause", () => audio.pause());
   set("stop", () => audio.pause());
   set("seekbackward", (d) => seekTo(Math.max(0, audio.currentTime - (d.seekOffset || 10))));
   set("seekforward", (d) => seekTo(audio.currentTime + (d.seekOffset || 10)));
-  set("previoustrack", () => loadChapter(state.ci - 1, 0, true));
-  set("nexttrack", () => loadChapter(state.ci + 1, 0, true));
+  set("previoustrack", () => { exitFollow(); loadChapter(state.ci - 1, 0, true); });
+  set("nexttrack", () => { exitFollow(); loadChapter(state.ci + 1, 0, true); });
   set("seekto", (d) => {
     if (d.seekTime == null) return;
     if (d.fastSeek && audio.fastSeek) audio.fastSeek(d.seekTime);
@@ -1168,17 +1520,17 @@ function buildExportMenu() {
   if (!id) { menu.innerHTML = ""; return; }
   const rows = [
     `<div class="em-sep">Whole book</div>`,
-    `<a download href="/api/books/${id}/transcript.txt">📄 Transcript (.txt)</a>`,
-    `<a download href="/api/books/${id}/subtitles.vtt">💬 Subtitles (.vtt)</a>`,
-    `<a download href="/api/books/${id}/subtitles.srt">💬 Subtitles (.srt)</a>`,
+    `<a download href="/api/books/${id}/transcript.txt">${icon("file-text")} Transcript (.txt)</a>`,
+    `<a download href="/api/books/${id}/subtitles.vtt">${icon("captions")} Subtitles (.vtt)</a>`,
+    `<a download href="/api/books/${id}/subtitles.srt">${icon("captions")} Subtitles (.srt)</a>`,
     `<div class="em-sep">Notes</div>`,
-    `<a download href="/api/books/${id}/notes.md">📝 Notes (Markdown)</a>`,
-    `<a download href="/api/books/${id}/notes.md?flavor=obsidian">🔮 Notes (Obsidian)</a>`,
+    `<a download href="/api/books/${id}/notes.md">${icon("note")} Notes (Markdown)</a>`,
+    `<a download href="/api/books/${id}/notes.md?flavor=obsidian">${icon("sparkles")} Notes (Obsidian)</a>`,
   ];
   if (state.ci >= 0 && state.manifest && isReady(state.manifest.chapters[state.ci])) {
     rows.push(`<div class="em-sep">This chapter</div>`,
-      `<a download href="/api/books/${id}/chapter/${state.ci}/subtitles.vtt">💬 Chapter (.vtt)</a>`,
-      `<a download href="/api/books/${id}/chapter/${state.ci}/subtitles.srt">💬 Chapter (.srt)</a>`);
+      `<a download href="/api/books/${id}/chapter/${state.ci}/subtitles.vtt">${icon("captions")} Chapter (.vtt)</a>`,
+      `<a download href="/api/books/${id}/chapter/${state.ci}/subtitles.srt">${icon("captions")} Chapter (.srt)</a>`);
   }
   menu.innerHTML = rows.join("");
 }
@@ -1193,6 +1545,108 @@ document.addEventListener("click", (e) => {
   if (!menu.hidden && !e.target.closest(".export-wrap")) menu.hidden = true;
 });
 
+/* ----------------------------------------------------------- reading mode */
+// Full-screen, distraction-free reading: hide the topbar/sidebar/player and widen the text,
+// while audio, the karaoke highlight and click-to-seek keep working on the same .sent spans.
+// A floating control (play/pause · prev/next sentence · exit) auto-hides after a few idle
+// seconds and reappears on any pointer/scroll activity. `f` toggles, `Esc` exits.
+let readingHideTimer = null;
+function enterReadingMode() {
+  if (state.readingMode || !state.bookId || $("#readerView").hidden) return;
+  state.readingMode = true;
+  $("#app").classList.add("reading");
+  $("#readingControls").hidden = false;
+  showReadingControls();
+  if (state.activeSi >= 0 && state.spanEls[state.activeSi]) scrollIntoViewIfNeeded(state.spanEls[state.activeSi]);
+}
+function exitReadingMode() {
+  if (!state.readingMode) return;
+  state.readingMode = false;
+  $("#app").classList.remove("reading");
+  $("#readingControls").hidden = true;
+  clearTimeout(readingHideTimer);
+}
+function toggleReadingMode() { state.readingMode ? exitReadingMode() : enterReadingMode(); }
+function showReadingControls() {
+  if (!state.readingMode) return;
+  $("#readingControls").classList.remove("faded");
+  clearTimeout(readingHideTimer);
+  readingHideTimer = setTimeout(() => { if (state.readingMode) $("#readingControls").classList.add("faded"); }, 3000);
+}
+["mousemove", "touchstart"].forEach((ev) =>
+  document.addEventListener(ev, () => { if (state.readingMode) showReadingControls(); }, { passive: true }));
+
+$("#readingBtn").addEventListener("click", toggleReadingMode);
+$("#rcExit").addEventListener("click", exitReadingMode);
+$("#rcPlay").addEventListener("click", () => audio.paused ? audio.play() : audio.pause());
+$("#rcPrev").addEventListener("click", () => jumpSentence(-1));
+$("#rcNext").addEventListener("click", () => jumpSentence(1));
+audio.addEventListener("play", () => { const b = $("#rcPlay"); if (b) b.innerHTML = icon("pause"); });
+audio.addEventListener("pause", () => { const b = $("#rcPlay"); if (b) b.innerHTML = icon("play"); });
+
+/* --------------------------------------------------------- account button */
+$("#accountBtn").addEventListener("click", openAccountModal);
+$("#followStop").addEventListener("click", exitFollow);   // leave cross-device follow
+$("#authForm").addEventListener("submit", (e) => { e.preventDefault(); submitAuth(); });
+document.querySelectorAll(".auth-tab").forEach((t) =>
+  t.addEventListener("click", () => setAuthMode(t.dataset.mode)));
+$("#authSwitchBtn").addEventListener("click", () => setAuthMode(authMode === "signup" ? "signin" : "signup"));
+$("#pwToggle").addEventListener("click", togglePasswordVisibility);
+$("#acctSignOut").addEventListener("click", doSignOut);
+$("#acctDone").addEventListener("click", closeAccountModal);
+$("#acctClose").addEventListener("click", closeAccountModal);
+$("#accountModal").addEventListener("click", (e) => { if (e.target.id === "accountModal") closeAccountModal(); });
+
+/* --------------------------------------------------- connect-phone (mobile pairing) */
+// Shows a QR + address of this computer's LAN URL so the phone app can scan to connect.
+// The address (and the whole reachability question) is answered by /api/server-info.
+async function openPairModal() {
+  $("#pairModal").hidden = false;
+  $("#pairWarn").hidden = true;
+  try {
+    renderPairInfo(await api("/api/server-info"));
+  } catch (e) {
+    $("#pairBody").hidden = true;
+    const warn = $("#pairWarn");
+    warn.hidden = false;
+    warn.innerHTML = icon("alert") + " Couldn't read this computer's network address.";
+  }
+}
+function renderPairInfo(info) {
+  const warn = $("#pairWarn");
+  const url = info.primary;
+  $("#pairBody").hidden = false;
+  if (!info.lan_reachable) {
+    warn.hidden = false;
+    warn.innerHTML = icon("alert") +
+      " Your phone can't connect yet — the server is only listening on this computer. " +
+      "Restart it with <code>HOST=0.0.0.0 ./scripts/run.sh</code>, then reopen this panel.";
+  } else if (!url) {
+    warn.hidden = false;
+    warn.innerHTML = icon("alert") + " No Wi-Fi address found — connect this computer to a network.";
+  } else {
+    warn.hidden = true;
+  }
+  const qr = $("#pairQr");
+  if (url) { qr.src = "/api/pair.svg?t=" + Date.now(); qr.hidden = false; }   // cache-bust per open
+  else { qr.removeAttribute("src"); qr.hidden = true; }
+  const btn = $("#pairUrl");
+  btn.textContent = url ? url.replace(/^https?:\/\//, "") : "—";
+  btn.dataset.url = url || "";
+  const others = (info.urls || []).filter((u) => u !== url);
+  $("#pairAlt").innerHTML = others.length
+    ? "Also at " + others.map((u) => `<code>${escapeHtml(u.replace(/^https?:\/\//, ""))}</code>`).join(" · ")
+    : "";
+}
+function closePairModal() { $("#pairModal").hidden = true; }
+$("#pairBtn").addEventListener("click", openPairModal);
+$("#pairClose").addEventListener("click", closePairModal);
+$("#pairModal").addEventListener("click", (e) => { if (e.target.id === "pairModal") closePairModal(); });
+$("#pairUrl").addEventListener("click", () => {
+  const u = $("#pairUrl").dataset.url;
+  if (u && navigator.clipboard) navigator.clipboard.writeText(u).then(() => toast("Address copied.")).catch(() => {});
+});
+
 /* --------------------------------------------------------------- keyboard */
 document.addEventListener("keydown", (e) => {
   const tag = (e.target.tagName || "").toLowerCase();
@@ -1203,7 +1657,10 @@ document.addEventListener("keydown", (e) => {
     if (!$("#noteEditor").hidden) { closeNoteEditor(); return; }   // before the typing guard, so it closes from the textarea
     if (!$("#notePopover").hidden) { hideNotePopover(); return; }
     if (!$("#shortcutsModal").hidden) { closeShortcuts(); return; }
+    if (!$("#accountModal").hidden) { closeAccountModal(); return; }
+    if (!$("#pairModal").hidden) { closePairModal(); return; }
     if ($("#modal").hidden === false) closeModal();
+    else if (state.readingMode) exitReadingMode();
     else if ($("#searchInput").value) clearSearch();
     else if (!$("#readerView").hidden) showLibrary();
     return;
@@ -1221,6 +1678,7 @@ document.addEventListener("keydown", (e) => {
     case "]": loadChapter(state.ci + 1, 0, true); break;
     case "b": case "B": addBookmark(); break;
     case "n": case "N": startNoteAtCurrent(); break;
+    case "f": case "F": e.preventDefault(); toggleReadingMode(); break;
   }
 });
 function jumpSentence(dir) {
@@ -1237,7 +1695,7 @@ async function loadHealthWarnings() {
   try {
     const h = await api("/api/health");
     if (h.warnings && h.warnings.length) {
-      el.innerHTML = h.warnings.map((w) => "⚠ " + escapeHtml(w)).join("<br>");
+      el.innerHTML = h.warnings.map((w) => icon("alert") + " " + escapeHtml(w)).join("<br>");
       el.hidden = false;
     } else { el.hidden = true; }
   } catch { el.hidden = true; }
@@ -1280,7 +1738,6 @@ $("#ingestForm").addEventListener("submit", async (e) => {
   if (!file) return;
   const fd = new FormData();
   fd.append("file", file);
-  fd.append("engine", $("#engineSelect").value);
   fd.append("voice", $("#voiceSelect").value);
   fd.append("speed", $("#ingestSpeed").value);
   $("#startIngest").disabled = true;
@@ -1325,12 +1782,14 @@ async function pollJob(jobId) {
 }
 
 let toastTimer = null;
-function toast(msg) {
+function toast(msg, onClick) {
   const el = $("#toast");
   el.textContent = msg;
   el.hidden = false;
+  el.classList.toggle("clickable", !!onClick);
+  el.onclick = onClick ? () => { el.hidden = true; el.onclick = null; el.classList.remove("clickable"); try { onClick(); } catch (e) {} } : null;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, 3200);
+  toastTimer = setTimeout(() => { el.hidden = true; el.onclick = null; el.classList.remove("clickable"); }, onClick ? 6000 : 3200);
 }
 
 /* ----------------------------------------------------------- drag and drop */
@@ -1349,6 +1808,7 @@ window.addEventListener("drop", (e) => {
 
 /* ------------------------------------------------------------------- init */
 (function init() {
+  hydrateIcons(document);   // fill every [data-icon] in the static markup with its SVG
   const rate = localStorage.getItem("abk:rate");
   if (rate) { $("#rateSelect").value = rate; audio.playbackRate = Number(rate); }
   const vol = localStorage.getItem("abk:vol");
@@ -1356,5 +1816,6 @@ window.addEventListener("drop", (e) => {
   applyTheme(localStorage.getItem("abk:theme") || "dark");
   applyFont(Number(localStorage.getItem("abk:reader-size")) || 20);
   setupMediaSession();
+  updateAccountUI();   // reflects "Local" until sync.js reports auth (see window.ABK)
   showLibrary();
 })();

@@ -101,7 +101,10 @@ body {
   padding: 10px 18px; background: var(--surface0);
   flex: 0 0 auto;
 }
-.brand { font-weight: 700; letter-spacing: .2px; }
+.brand { display: flex; align-items: center; gap: 9px; }
+.brand-name { font-weight: 700; letter-spacing: .2px; }
+.brand-mark { display: inline-flex; flex: 0 0 auto; }
+.brand-mark .icon { width: 26px; height: 26px; border-radius: 6px; }
 .spacer { flex: 1; }
 .book-meta { color: var(--muted); font-size: 13px; text-align: right; }
 
@@ -548,3 +551,234 @@ input[type=range]::-webkit-slider-thumb {
 }
 .notes-panel .note:hover .note-del { opacity: 1; }
 .notes-panel .note-del:hover { color: var(--red); }
+
+/* ------------------------------------------------------------ reading mode */
+/* Full-screen, distraction-free reading: hide the chrome and widen the column. The reader
+   text is untouched, so the karaoke highlight and click-to-seek keep working. Specificity
+   (#app.reading #x) beats the base display rules without needing !important. */
+#app.reading #topbar,
+#app.reading #sidebar,
+#app.reading #player { display: none; }
+#app.reading .chapter-header { padding-top: 44px; }
+#app.reading .reader { max-width: 760px; padding-bottom: 40vh; }
+
+/* Floating control pill — only shown in reading mode; fades out when idle. */
+.reading-controls {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%);
+  z-index: 80; display: flex; align-items: center; gap: 8px;
+  background: var(--surface2); padding: 8px 12px; border-radius: var(--r-full);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .38); transition: opacity .4s ease;
+}
+.reading-controls.faded { opacity: 0; pointer-events: none; }
+.reading-controls .rc-btn {
+  background: transparent; border: none; color: var(--text);
+  border-radius: 50%; width: 40px; height: 40px; font-size: 15px; display: grid; place-items: center;
+}
+.reading-controls .rc-btn:hover { background: var(--surface1); }
+.reading-controls .rc-play {
+  background: var(--accent); color: var(--crust); width: 46px; height: 46px; font-size: 17px;
+}
+.reading-controls .rc-play:hover { filter: brightness(1.08); }
+.reading-controls .rc-exit { color: var(--muted); }
+.reading-controls .rc-exit:hover { color: var(--red); }
+
+/* ------------------------------------------------------- account / sync UI */
+.account-btn {
+  font-size: 12px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.account-card { max-width: 400px; position: relative; }
+
+/* corner close (✕) */
+.modal-close {
+  position: absolute; top: 12px; right: 12px; z-index: 1;
+  background: transparent; border: none; color: var(--muted);
+  font-size: 15px; line-height: 1; padding: 6px 9px; border-radius: var(--r-md);
+}
+.modal-close:hover { background: var(--surface1); color: var(--text); }
+
+/* header: badge + title + subtitle, centered */
+.auth-head { text-align: center; margin-bottom: 20px; }
+.auth-badge {
+  width: 54px; height: 54px; margin: 6px auto 14px;
+  display: grid; place-items: center; border-radius: var(--r-full);
+  background: var(--mauve-15); color: var(--accent); font-size: 25px;
+}
+.auth-badge-ok { background: rgba(166, 227, 161, .16); color: var(--green); }
+.auth-head h2 { margin: 0 0 6px; font-size: 21px; }
+.auth-subtitle { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+
+/* segmented sign-in / create-account control */
+.auth-tabs {
+  display: flex; gap: 4px; padding: 4px; margin-bottom: 18px;
+  background: var(--base); border-radius: var(--r-md);
+}
+.auth-tab {
+  flex: 1; background: transparent; border: none; color: var(--muted);
+  padding: 8px 10px; border-radius: calc(var(--r-md) - 3px);
+  font-size: 13px; font-weight: 600; font-family: inherit;
+}
+.auth-tab:hover { color: var(--text); }
+.auth-tab.active { background: var(--surface2); color: var(--text); }
+.auth-tab:disabled { opacity: .55; cursor: default; }
+
+/* text fields (email / password / confirm) */
+.account-card .field { margin-bottom: 14px; }
+.account-card .field input[type=email],
+.account-card .field input[type=password],
+.account-card .field input[type=text] {
+  width: 100%; box-sizing: border-box;
+  background: var(--surface1); border: 1px solid transparent; color: var(--text);
+  border-radius: var(--r-md); padding: 11px 12px; font-size: 14px; font-family: inherit; outline: none;
+}
+.account-card .field input:focus { border-color: var(--accent); }
+.account-card .field input:disabled { opacity: .55; }
+
+/* password field + show/hide toggle */
+.pw-wrap { position: relative; display: block; }
+/* Match the base input specificity (0,3,1) and win on order so the shorthand `padding`
+   above doesn't reset the right padding — the field must clear the Show/Hide button. */
+.account-card .field .pw-wrap input { padding-right: 64px; }
+.pw-toggle {
+  position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
+  background: transparent; border: none; color: var(--muted);
+  font-size: 12px; font-weight: 600; font-family: inherit;
+  padding: 6px 8px; border-radius: var(--r-sm);
+}
+.pw-toggle:hover { color: var(--text); background: var(--surface2); }
+.pw-toggle:disabled { opacity: .5; cursor: default; }
+
+/* full-width primary submit */
+.auth-submit { width: 100%; padding: 11px; margin-top: 2px; font-size: 15px; }
+.auth-submit:disabled { opacity: .7; cursor: default; }
+
+/* inline auth error */
+.auth-error {
+  background: rgba(243, 139, 168, .12); color: var(--red);
+  border-radius: var(--r-md); padding: 9px 11px;
+  font-size: 12.5px; line-height: 1.5; margin-bottom: 14px;
+}
+
+/* switch line under the form */
+.auth-switch { text-align: center; color: var(--muted); font-size: 13px; margin: 16px 0 0; }
+.linkbtn {
+  background: none; border: none; color: var(--accent);
+  font-size: 13px; font-weight: 600; font-family: inherit; padding: 0 2px;
+}
+.linkbtn:hover { text-decoration: underline; }
+.acct-note { text-align: center; margin-top: 12px; }
+
+/* signed-in status pill + actions */
+.acct-status {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--base); border-radius: var(--r-md); padding: 12px 14px;
+  color: var(--muted); font-size: 13px; line-height: 1.5; margin-bottom: 18px;
+}
+.acct-dot {
+  width: 9px; height: 9px; border-radius: var(--r-full); background: var(--green);
+  flex: 0 0 auto; box-shadow: 0 0 0 3px rgba(166, 227, 161, .20);
+}
+.acct-signedin-actions { justify-content: space-between; }
+
+/* connect-phone (mobile pairing) modal */
+.pair-card { max-width: 400px; position: relative; text-align: center; }
+.pair-body { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+.pair-qr {
+  background: #fff; padding: 12px; box-sizing: border-box;
+  width: 216px; height: 216px; border-radius: var(--r-md); display: grid; place-items: center;
+}
+.pair-qr img { width: 100%; height: 100%; display: block; }
+.pair-url-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.pair-url-label { color: var(--muted); font-size: 12px; }
+.pair-url {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 15px;
+  background: var(--base); color: var(--text); border: none;
+  border-radius: var(--r-md); padding: 8px 14px; cursor: pointer;
+}
+.pair-url:hover { background: var(--surface1); }
+.pair-alt { color: var(--muted); font-size: 11px; line-height: 1.6; }
+.pair-alt code, .health-warn code {
+  background: var(--base); padding: 1px 6px; border-radius: var(--r-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em;
+}
+
+.toast.clickable { cursor: pointer; border-left: 3px solid var(--accent); }
+
+/* Cross-device auto-follow pill — floats top-center above everything (incl. reading mode). */
+.follow-banner {
+  position: fixed; left: 50%; top: 14px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 9px;
+  background: var(--surface2); color: var(--text);
+  border-left: 3px solid var(--accent);
+  padding: 8px 10px 8px 13px; border-radius: var(--r-md);
+  font-size: 12.5px; z-index: 70; max-width: 92vw;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, .38);
+}
+.follow-banner svg { color: var(--accent); flex: none; }
+.follow-banner #followText { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fb-stop {
+  border: none; background: var(--accent); color: var(--bg);
+  padding: 3px 11px; border-radius: 999px; font-size: 12px; font-weight: 600; cursor: pointer;
+  flex: none;
+}
+
+/* ------------------------------------------------------------------ icons */
+/* SVG icons (see web/icons.js). They inherit the surrounding text color via
+   `currentColor`, so every existing color/hover rule keeps working. Sized in
+   `em` by default so an icon tracks its context's font size; specific spots
+   override with pixels below. */
+.icon {
+  width: 1.15em; height: 1.15em; display: inline-block;
+  vertical-align: -0.15em; flex: 0 0 auto;
+}
+/* Buttons/labels that pair an icon with text: line them up and space them. */
+.text-icon { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Icon-only buttons */
+.icon-btn .icon { width: 18px; height: 18px; }
+.transport .icon-btn .icon { width: 21px; height: 21px; }
+.play-btn .icon { width: 20px; height: 20px; }
+
+/* Header brand + account + back */
+.account-btn .icon { width: 15px; height: 15px; }
+
+/* Extras: sleep (moon) + volume */
+.extras .ex-ico { display: inline-flex; align-items: center; color: var(--muted); }
+.extras .ex-ico .icon { width: 16px; height: 16px; }
+
+/* Reading-mode floating controls */
+.reading-controls .rc-btn .icon { width: 19px; height: 19px; }
+.reading-controls .rc-play .icon { width: 21px; height: 21px; }
+
+/* Library / continue covers — soft accent glyph on the tile */
+.book-card .cover .icon { width: 46px; height: 46px; color: var(--accent); opacity: .5; }
+.continue-card .cc-cover .icon { width: 30px; height: 30px; color: var(--accent); opacity: .7; }
+.book-card .del .icon, .book-card .pkg .icon, .book-card .rss .icon { width: 15px; height: 15px; }
+.cc-label { display: inline-flex; align-items: center; gap: 5px; }
+.cc-label .icon { width: 12px; height: 12px; }
+
+/* Generation banner status glyph */
+.gen-banner .gb-ico { display: inline-flex; align-items: center; }
+.gen-banner .gb-ico .icon { width: 13px; height: 13px; }
+
+/* Outline chapter status (clock / alert) */
+.outline .ch .dur .icon { width: 14px; height: 14px; vertical-align: -0.2em; }
+
+/* Search-result nav prefix chevron */
+.search-results .res .loc .loc-ico { width: 11px; height: 11px; vertical-align: -0.05em; }
+
+/* Sidebar panel headers */
+.bookmarks .bm-head { display: flex; align-items: center; gap: 6px; }
+.bookmarks .bm-head .icon { width: 13px; height: 13px; }
+.notes-panel .np-head-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.notes-panel .np-head-title .icon { width: 13px; height: 13px; }
+.notes-panel .note-orphan .icon { width: 12px; height: 12px; }
+
+/* Export menu rows */
+.export-menu a { display: flex; align-items: center; gap: 8px; }
+.export-menu a .icon { width: 15px; height: 15px; color: var(--accent); }
+
+/* In-text note marker (pen) */
+.note-marker .icon { width: .9em; height: .9em; vertical-align: -0.05em; }
+
+/* Account modal badge */
+.auth-badge .icon { width: 26px; height: 26px; }

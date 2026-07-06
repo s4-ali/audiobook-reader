@@ -4,15 +4,18 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Audiobook Reader</title>
+  <link rel="icon" type="image/svg+xml" href="/logo.svg" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 <div id="app">
   <header id="topbar">
-    <button id="backBtn" class="icon-btn" title="Library (Esc)" hidden>← Library</button>
-    <div class="brand">🎧 Audiobook Reader</div>
+    <button id="backBtn" class="icon-btn text-icon" title="Library (Esc)" hidden><span data-icon="arrow-left"></span> Library</button>
+    <div class="brand"><span class="brand-mark" data-icon="logo"></span><span class="brand-name">Audiobook Reader</span></div>
     <div class="spacer"></div>
-    <button id="helpBtn" class="icon-btn" title="Keyboard shortcuts (?)">⌨</button>
+    <button id="pairBtn" class="icon-btn" title="Connect your phone" data-icon="smartphone"></button>
+    <button id="accountBtn" class="icon-btn account-btn" title="Cloud sync"><span data-icon="cloud-off"></span> Local</button>
+    <button id="helpBtn" class="icon-btn" title="Keyboard shortcuts (?)" data-icon="keyboard"></button>
     <div class="display-wrap">
       <button id="displayBtn" class="icon-btn" title="Display settings — text size & theme">Aa</button>
       <div id="displayMenu" class="display-menu" hidden>
@@ -36,7 +39,7 @@
   <section id="libraryView" class="view">
     <div class="library-head">
       <h1>Your Library</h1>
-      <button id="addBookBtn" class="primary">+ Add a book</button>
+      <button id="addBookBtn" class="primary text-icon"><span data-icon="plus"></span> Add a book</button>
     </div>
     <div id="continueSection" class="continue-section" hidden></div>
     <div id="bookGrid" class="book-grid"></div>
@@ -51,11 +54,11 @@
     <aside id="sidebar">
       <div class="search-wrap">
         <input id="searchInput" type="search" placeholder="Search this book…  ( / )" />
-        <button id="searchClear" class="icon-btn" title="Clear">✕</button>
+        <button id="searchClear" class="icon-btn" title="Clear" data-icon="x"></button>
       </div>
       <div id="searchResults" class="search-results" hidden></div>
       <div class="export-wrap">
-        <button id="exportBtn" class="export-btn" title="Download transcript & subtitles">⤓ Transcript / subtitles</button>
+        <button id="exportBtn" class="export-btn text-icon" title="Download transcript & subtitles"><span data-icon="download"></span> Transcript / subtitles</button>
         <div id="exportMenu" class="export-menu" hidden></div>
       </div>
       <div id="genBanner" class="gen-banner" hidden></div>
@@ -76,13 +79,14 @@
       <div id="npSentence" class="np-sentence"></div>
     </div>
     <div class="transport">
-      <button id="prevChBtn" class="icon-btn" title="Previous chapter ( [ )">⏮</button>
-      <button id="back10Btn" class="icon-btn" title="Back 10s (←)">↺10</button>
-      <button id="playBtn" class="play-btn" title="Play/Pause (Space)">▶</button>
-      <button id="fwd10Btn" class="icon-btn" title="Forward 10s (→)">10↻</button>
-      <button id="nextChBtn" class="icon-btn" title="Next chapter ( ] )">⏭</button>
-      <button id="bookmarkBtn" class="icon-btn" title="Bookmark this spot (b)">🔖</button>
-      <button id="noteBtn" class="icon-btn" title="Add a note here (n)">📝</button>
+      <button id="prevChBtn" class="icon-btn" title="Previous chapter ( [ )" data-icon="skip-back"></button>
+      <button id="back10Btn" class="icon-btn" title="Back 10s (←)" data-icon="replay-10"></button>
+      <button id="playBtn" class="play-btn" title="Play/Pause (Space)" data-icon="play"></button>
+      <button id="fwd10Btn" class="icon-btn" title="Forward 10s (→)" data-icon="forward-10"></button>
+      <button id="nextChBtn" class="icon-btn" title="Next chapter ( ] )" data-icon="skip-forward"></button>
+      <button id="bookmarkBtn" class="icon-btn" title="Bookmark this spot (b)" data-icon="bookmark"></button>
+      <button id="noteBtn" class="icon-btn" title="Add a note here (n)" data-icon="note"></button>
+      <button id="readingBtn" class="icon-btn" title="Reading mode — full screen (f)" data-icon="book-open"></button>
     </div>
     <div class="seek">
       <span id="curTime" class="time">0:00</span>
@@ -102,7 +106,7 @@
         </select>
       </label>
       <label class="sleep">
-        <span>😴</span>
+        <span class="ex-ico" data-icon="moon" title="Sleep timer"></span>
         <select id="sleepSelect" title="Sleep timer — pause playback after a while">
           <option value="0" selected>Off</option>
           <option value="5">5 min</option>
@@ -116,13 +120,28 @@
         <span id="sleepLeft" class="sleep-left" hidden></span>
       </label>
       <label class="vol">
-        🔊 <input id="volBar" type="range" min="0" max="1" step="0.05" value="1" />
+        <span class="ex-ico" data-icon="volume" title="Volume"></span>
+        <input id="volBar" type="range" min="0" max="1" step="0.05" value="1" />
       </label>
     </div>
   </footer>
 
+  <!-- READING-MODE FLOATING CONTROLS (only visible in full-screen reading mode) -->
+  <div id="readingControls" class="reading-controls" hidden>
+    <button id="rcPrev" class="rc-btn" title="Previous sentence (↑)" data-icon="chevron-up"></button>
+    <button id="rcPlay" class="rc-btn rc-play" title="Play / pause (Space)" data-icon="play"></button>
+    <button id="rcNext" class="rc-btn" title="Next sentence (↓)" data-icon="chevron-down"></button>
+    <button id="rcExit" class="rc-btn rc-exit" title="Exit reading mode (Esc)" data-icon="x"></button>
+  </div>
+
   <audio id="audio" preload="metadata"></audio>
   <div id="toast" class="toast" hidden></div>
+  <!-- Cross-device auto-follow indicator: shown while this tab mirrors another device's live playback. -->
+  <div id="followBanner" class="follow-banner" hidden>
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l3 8 4-16 3 8h5"/></svg>
+    <span id="followText">Playing on another device — following live</span>
+    <button id="followStop" type="button" class="fb-stop">Stop</button>
+  </div>
 </div>
 
 <!-- ADD BOOK MODAL -->
@@ -144,12 +163,6 @@
             <option value="0.9">0.9×</option>
             <option value="1" selected>1×</option>
             <option value="1.1">1.1×</option>
-          </select>
-        </label>
-        <label class="field">Engine
-          <select id="engineSelect">
-            <option value="kokoro" selected>Kokoro (real)</option>
-            <option value="dummy">Dummy (test)</option>
           </select>
         </label>
       </div>
@@ -180,6 +193,7 @@
       <kbd>/</kbd><span>Search this book</span>
       <kbd>B</kbd><span>Bookmark the current spot</span>
       <kbd>N</kbd><span>Add a note at the current spot</span>
+      <kbd>F</kbd><span>Reading mode — full screen</span>
       <kbd>Select</kbd><span>Highlight a passage · add a note</span>
       <kbd>?</kbd><span>Show this help</span>
       <kbd>Esc</kbd><span>Close · clear search · back to library</span>
@@ -197,7 +211,7 @@
   <button class="np-sw np-blue"   data-color="blue"   title="Highlight blue"></button>
   <button class="np-sw np-pink"   data-color="pink"   title="Highlight pink"></button>
   <button class="np-sw np-purple" data-color="purple" title="Highlight purple"></button>
-  <button id="notePopNote" class="np-note" title="Add a note">📝 Note</button>
+  <button id="notePopNote" class="np-note text-icon" title="Add a note"><span data-icon="note"></span> Note</button>
 </div>
 
 <!-- NOTE EDITOR -->
@@ -226,6 +240,94 @@
   </div>
 </div>
 
+<!-- ACCOUNT / CLOUD SYNC -->
+<div id="accountModal" class="modal" hidden>
+  <div class="modal-card account-card">
+    <button type="button" id="acctClose" class="modal-close" title="Close (Esc)" aria-label="Close" data-icon="x"></button>
+
+    <!-- SIGNED OUT — sign in / create account -->
+    <div id="acctSignedOut">
+      <div class="auth-head">
+        <div class="auth-badge" aria-hidden="true" data-icon="cloud"></div>
+        <h2 id="authTitle">Welcome back</h2>
+        <p id="authSubtitle" class="auth-subtitle">Sign in to sync your progress &amp; notes across devices.</p>
+      </div>
+
+      <div class="auth-tabs" role="tablist">
+        <button type="button" class="auth-tab active" data-mode="signin" role="tab">Sign in</button>
+        <button type="button" class="auth-tab" data-mode="signup" role="tab">Create account</button>
+      </div>
+
+      <form id="authForm" novalidate>
+        <label class="field">Email
+          <input id="acctEmail" type="email" autocomplete="username" autocapitalize="off"
+                 spellcheck="false" placeholder="you@example.com" />
+        </label>
+        <label class="field">Password
+          <span class="pw-wrap">
+            <input id="acctPassword" type="password" autocomplete="current-password" placeholder="••••••••" />
+            <button type="button" id="pwToggle" class="pw-toggle" aria-label="Show password">Show</button>
+          </span>
+        </label>
+        <label class="field" id="confirmField" hidden>Confirm password
+          <input id="acctConfirm" type="password" autocomplete="new-password" placeholder="••••••••" />
+        </label>
+        <div id="acctError" class="auth-error" role="alert" hidden></div>
+        <button type="submit" id="acctSubmit" class="primary auth-submit">Sign in</button>
+      </form>
+
+      <p class="auth-switch">
+        <span id="authSwitchText">New to Audiobook Reader?</span>
+        <button type="button" id="authSwitchBtn" class="linkbtn">Create an account</button>
+      </p>
+      <p class="hint acct-note">Syncs through your own Firebase project — your data never leaves it. See the README.</p>
+    </div>
+
+    <!-- SIGNED IN -->
+    <div id="acctSignedIn" hidden>
+      <div class="auth-head">
+        <div class="auth-badge auth-badge-ok" aria-hidden="true" data-icon="check"></div>
+        <h2>You're all set</h2>
+        <p class="auth-subtitle">Signed in as <b id="acctWho"></b></p>
+      </div>
+      <div class="acct-status">
+        <span class="acct-dot" aria-hidden="true"></span>
+        <span>Reading progress &amp; notes sync automatically across your devices.</span>
+      </div>
+      <div class="modal-actions acct-signedin-actions">
+        <button type="button" id="acctSignOut" class="ghost">Sign out</button>
+        <button type="button" id="acctDone" class="primary">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- CONNECT YOUR PHONE (mobile pairing) -->
+<div id="pairModal" class="modal" hidden>
+  <div class="modal-card pair-card">
+    <button type="button" id="pairClose" class="modal-close" title="Close (Esc)" aria-label="Close" data-icon="x"></button>
+    <div class="auth-head">
+      <div class="auth-badge" aria-hidden="true" data-icon="smartphone"></div>
+      <h2>Connect your phone</h2>
+      <p class="auth-subtitle">Open the Audiobook Reader app on your phone and scan this code — or just
+        pick this computer from the list on the app's <b>Connect</b> screen.</p>
+    </div>
+    <div id="pairWarn" class="health-warn" hidden></div>
+    <div id="pairBody" class="pair-body">
+      <div class="pair-qr"><img id="pairQr" alt="Pairing QR code" hidden /></div>
+      <div class="pair-url-wrap">
+        <span class="pair-url-label">Server address</span>
+        <button id="pairUrl" class="pair-url" title="Copy address" type="button">…</button>
+        <div id="pairAlt" class="pair-alt"></div>
+      </div>
+    </div>
+    <p class="hint">Your phone must be on the same Wi-Fi. The app finds this computer automatically
+      over the network; the QR code and address are a fallback if it can't.</p>
+  </div>
+</div>
+
+<script src="/icons.js"></script>
 <script src="/app.js"></script>
+<script type="module" src="/sync.js"></script>
 </body>
 </html>
