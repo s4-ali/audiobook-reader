@@ -119,6 +119,9 @@ Voices include `casual_male`, `casual_female`, `cheerful_female`, `neutral_male`
 > **Notes.** Voxtral is heavier and slower than Kokoro-82M (it's a 4B model), so expect longer
 > generation. Its weights are **CC BY-NC 4.0 (non-commercial)** — Kokoro (Apache-2.0) remains the
 > default. MLX runs on the GPU (Metal), so this path is unaffected by CoreML/ANE issues.
+> To keep its narration flowing naturally, Voxtral synthesizes a whole paragraph at once (rather
+> than sentence-by-sentence) and recovers the per-sentence timings that drive highlighting via
+> forced alignment (torchaudio's `MMS_FA`, already installed; its ~300 MB model downloads once).
 
 ## Controlling generation
 

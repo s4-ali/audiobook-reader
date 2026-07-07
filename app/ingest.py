@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from . import audio as audiomod
-from . import config, extract as book_extract, pronounce, textproc
+from . import align, config, extract as book_extract, pronounce, textproc
 from .extract import BookDoc, Marker
 from .tts import make_engine
 
@@ -203,6 +203,102 @@ def _render_chapter(engine, ch: Chapter, sr: int,
                     on_sentence: Optional[Callable[[], None]] = None,
                     control: Optional[JobControl] = None,
                     pron_rules: Optional[list] = None):
+    """Dispatch. Voxtral renders whole paragraphs continuously (natural cross-sentence
+    prosody) and recovers per-sentence timings via forced alignment; every other engine
+    keeps the per-sentence path, where timings come from each sentence's own duration."""
+    if getattr(engine, "name", "") == "voxtral" and config.VOXTRAL_ALIGN and align.available():
+        return _render_chapter_aligned(engine, ch, sr, on_sentence, control, pron_rules)
+    return _render_chapter_per_sentence(engine, ch, sr, on_sentence, control, pron_rules)
+
+
+def _chunk_sentences(sents, ch_text: str, budget: int) -> List[List[int]]:
+    """Group consecutive sentence indices into continuous-synthesis chunks: break at a
+    paragraph boundary, or when adding the next sentence would exceed `budget` chars."""
+    chunks: List[List[int]] = []
+    cur: List[int] = []
+    cur_chars = 0
+    for k, s in enumerate(sents):
+        if cur and cur_chars + len(s.text) > budget:
+            chunks.append(cur)
+            cur, cur_chars = [], 0
+        cur.append(k)
+        cur_chars += len(s.text)
+        between = ch_text[s.end: sents[k + 1].start] if k + 1 < len(sents) else "\n\n"
+        if "\n\n" in between:                       # paragraph boundary → close the chunk
+            chunks.append(cur)
+            cur, cur_chars = [], 0
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _render_chapter_aligned(engine, ch: Chapter, sr: int,
+                            on_sentence: Optional[Callable[[], None]] = None,
+                            control: Optional[JobControl] = None,
+                            pron_rules: Optional[list] = None):
+    """Voxtral path: synthesize each paragraph/chunk in one call so prosody carries across
+    sentences, then forced-align to recover per-sentence s/e. Emits the same manifest
+    entries as the per-sentence path. Any chunk that won't align falls back to per-sentence
+    synthesis (with the usual inter-sentence gaps), so timings are always sane."""
+    sents = textproc.split_sentences(ch.text)
+    if not sents or not align.warmup():        # no text, or the aligner won't load → per-sentence
+        return _render_chapter_per_sentence(engine, ch, sr, on_sentence, control, pron_rules)
+
+    def is_para(k: int) -> bool:
+        between = ch.text[sents[k].end: sents[k + 1].start] if k + 1 < len(sents) else "\n\n"
+        return "\n\n" in between
+
+    chunks = _chunk_sentences(sents, ch.text, config.VOXTRAL_CHUNK_CHARS)
+    parts: List = []
+    timings: List[dict] = []
+    t = 0.0
+    for chunk in chunks:
+        if control is not None:
+            control.checkpoint()                    # per-chunk pause/cancel
+        spoken = [pronounce.apply(sents[k].text, pron_rules) for k in chunk]
+        audio = engine.synth(" ".join(spoken))      # one continuous synthesis
+        local = align.align_sentences(audio, sr, spoken)
+        if local is None or len(local) != len(chunk):
+            # Fail-safe: synth each sentence on its own, natural per-sentence timing + gaps.
+            local, sub, tt = [], [], 0.0
+            for sp in spoken:
+                a = engine.synth(sp)
+                d = audiomod.duration_seconds(a, sr)
+                local.append((tt, tt + d))
+                sub.append(a)
+                sub.append(audiomod.silence(config.SENTENCE_GAP_MS, sr))
+                tt += d + config.SENTENCE_GAP_MS / 1000.0
+            audio = audiomod.concat(sub)
+        chunk_dur = audiomod.duration_seconds(audio, sr)
+        parts.append(audio)
+        for idx, k in enumerate(chunk):
+            s_local, e_local = local[idx]
+            entry = {"i": k, "t": sents[k].text,
+                     "s": round(t + s_local, 3), "e": round(t + e_local, 3),
+                     "cs": sents[k].start, "ce": sents[k].end}
+            if is_para(k):
+                entry["p"] = 1
+            timings.append(entry)
+            if on_sentence:
+                on_sentence()
+        gap_ms = config.PARAGRAPH_GAP_MS if is_para(chunk[-1]) else config.SENTENCE_GAP_MS
+        parts.append(audiomod.silence(gap_ms, sr))
+        t += chunk_dur + gap_ms / 1000.0
+
+    pcm = audiomod.concat(parts)
+    topics = []
+    for m in ch.submarkers:
+        topics.append({
+            "title": m.title, "level": m.level,
+            "time": round(_time_at_char(timings, m.offset - ch.start), 3),
+        })
+    return pcm, timings, topics
+
+
+def _render_chapter_per_sentence(engine, ch: Chapter, sr: int,
+                    on_sentence: Optional[Callable[[], None]] = None,
+                    control: Optional[JobControl] = None,
+                    pron_rules: Optional[list] = None):
     sents = textproc.split_sentences(ch.text)
     parts: List = []
     timings: List[dict] = []
@@ -350,6 +446,14 @@ def ingest_pdf(pdf_path: str | Path, *, engine_name: str = None, voice: str = No
                              speed=speed, device=device)
     sr = engine.sample_rate
     eng_info = engine.info()
+
+    # Voxtral renders whole paragraphs continuously and recovers per-sentence timings by
+    # forced alignment; warm the aligner up front so its one-time model download surfaces
+    # as progress rather than a silent stall on the first chapter.
+    if getattr(engine, "name", "") == "voxtral" and config.VOXTRAL_ALIGN and align.available():
+        report("model", message="Loading forced aligner (first run downloads ~300 MB)…")
+        if not align.warmup():
+            report("model", message="Forced aligner unavailable — using per-sentence synthesis")
 
     if existing:
         manifest = existing

@@ -53,8 +53,10 @@ Every book lives in `library/books/<book-id>/` as per-chapter audio files plus a
 chapter has `status` (`pending`|`ready`|`error`), `audio`, `duration`, `topics[]`, and
 `sentences[]`. Sentence keys are terse: `i` index, `t` text, `s`/`e` start/end **seconds**,
 `cs`/`ce` char offsets into the chapter text, `p` paragraph-break flag. The per-sentence
-`s`/`e` timings are what power seeking, highlighting, and jump-to-search-result; they exist
-because each sentence is synthesized separately.
+`s`/`e` timings are what power seeking, highlighting, and jump-to-search-result. Kokoro/dummy
+get them free by synthesizing each sentence separately; Voxtral synthesizes whole paragraphs at
+once (for prosody) and recovers them by **forced alignment** (`app/align.py`) — either way the
+manifest shape is identical.
 
 ### `BookDoc` unifies PDF and EPUB
 `app/extract.py` defines the shared `BookDoc` (cleaned `linear_text`, `page_offsets`,
@@ -107,7 +109,11 @@ list | `derive` from a heading pattern — reusing the existing `_locate_*` offs
 (splits `linear_text` at level-1 marker offsets, attaching level-≥2 markers as topics; falls
 back to ~1400-word sections) → for each chapter: `split_sentences` (pysbd, `app/textproc.py`)
 → `engine.synth` per sentence → concatenate with inter-sentence/paragraph silence →
-`audio.write_audio` (pipes raw PCM to ffmpeg → MP3, WAV fallback). **The skeleton manifest
+`audio.write_audio` (pipes raw PCM to ffmpeg → MP3, WAV fallback). **Voxtral takes a different
+per-chapter path** (`_render_chapter_aligned`): sentences are grouped into paragraph-sized chunks
+(`_chunk_sentences`, capped at `VOXTRAL_CHUNK_CHARS`), each chunk synthesized in **one** continuous
+call so prosody flows across sentences, and per-sentence `s`/`e` recovered by forced alignment
+(`app/align.py`); a chunk that won't align falls back to per-sentence synth. **The skeleton manifest
 (all chapters `pending`) is written before any audio, then rewritten atomically after each
 chapter completes** — that's what makes a book playable while later chapters render. `resume`
 skips chapters already `ready` with an existing audio file.
@@ -123,11 +129,12 @@ than Kokoro; select with `TTS_ENGINE=voxtral` / `--engine voxtral`, deps via
 `./scripts/setup.sh --voxtral`, repo/voice via `VOXTRAL_REPO`/`VOXTRAL_VOICE`), or
 `DummyEngine` (silent tone sized to word count — the key tool for fast dev/verification). An
 engine returns float32 mono 24kHz PCM from `synth(text)`. **MLX runs on Metal, not CoreML**, so
-Voxtral is unaffected by CoreML/ANE issues. Voxtral still synthesizes **per sentence** (same as
-Kokoro), which is what keeps the manifest's per-sentence `s`/`e` timings — and thus karaoke
-highlighting + click-to-seek — working; the tradeoff is that per-sentence chunking forgoes some
-of Voxtral's cross-sentence prosody. A Kokoro-style/empty voice id (e.g. the default `af_heart`)
-is auto-mapped to the Voxtral preset so `--engine voxtral` works without also passing `--voice`.
+Voxtral is unaffected by CoreML/ANE issues. Unlike Kokoro (per-sentence), **Voxtral synthesizes
+whole paragraphs continuously** so its expressive prosody carries across sentence boundaries —
+otherwise each isolated sentence lands in a different "key"; per-sentence `s`/`e` are then
+recovered by forced alignment (`app/align.py` + `ingest._render_chapter_aligned`, toggle with
+`VOXTRAL_ALIGN`). A Kokoro-style/empty voice id (e.g. the default `af_heart`) is auto-mapped to
+the Voxtral preset so `--engine voxtral` works without also passing `--voice`.
 
 ### Generation control (`JobControl` in `app/ingest.py`)
 Pause/cancel are `threading.Event`s checked at `control.checkpoint()` between every sentence

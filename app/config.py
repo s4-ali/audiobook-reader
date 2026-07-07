@@ -38,6 +38,13 @@ SAMPLE_RATE = 24000                                       # Kokoro is fixed at 2
 # or `--engine voxtral`; install with `./scripts/setup.sh --voxtral`.
 VOXTRAL_REPO = os.environ.get("VOXTRAL_REPO", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
 VOXTRAL_VOICE = os.environ.get("VOXTRAL_VOICE", "casual_male")  # a Voxtral preset, not a Kokoro id
+# Voxtral prosody fix: synthesize a whole paragraph in one call (natural cross-sentence
+# intonation) and recover per-sentence timings by forced alignment (app/align.py, torchaudio
+# MMS_FA). 1 = on (default); off = the per-sentence path (each sentence its own "note").
+VOXTRAL_ALIGN = os.environ.get("VOXTRAL_ALIGN", "1").strip().lower() not in ("0", "false", "no")
+# Max characters per continuous-synthesis chunk — caps huge no-paragraph-break chapters (well
+# under Voxtral's ~327 s / 4096-token ceiling). Chunks always break on sentence boundaries.
+VOXTRAL_CHUNK_CHARS = int(os.environ.get("VOXTRAL_CHUNK_CHARS", "1200"))
 
 # --- Audio output ------------------------------------------------------------
 AUDIO_FORMAT = os.environ.get("AUDIO_FORMAT", "mp3")     # "mp3" | "wav"
