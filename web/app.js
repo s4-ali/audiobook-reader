@@ -100,7 +100,7 @@ async function loadLibrary() {
       <div class="author">${escapeHtml(b.author || "Unknown")}</div>
       <div class="stats"><span>${b.n_chapters} chapters</span><span>${fmtHrMin(b.duration)}</span>
         <span>${escapeHtml(b.voice || "")}</span></div>
-      ${resumeBarHtml(b)}`;
+      ${cardStatusHtml(b)}`;
     card.addEventListener("click", () => openBook(b.id));
     const pkgEl = card.querySelector(".pkg");
     if (pkgEl) pkgEl.addEventListener("click", (e) => e.stopPropagation());  // download, don't open
@@ -137,6 +137,24 @@ function resumeBarHtml(b) {
   const pct = done ? 100 : Math.min(100, Math.max(2, Math.round(p.frac * 100)));
   return `<div class="card-progress${done ? " done" : ""}" title="${done ? "Finished" : pct + "% listened"}">
             <div class="card-progress-fill" style="width:${pct}%"></div></div>`;
+}
+
+// The status/progress strip at the bottom of a library card. A book that isn't fully ready
+// shows how much audio has been rendered so far (generation progress) with a state label; a
+// ready book shows how far you've listened (the resume bar above). Generation and listening
+// are different meanings, so a card only ever shows one bar.
+function cardStatusHtml(b) {
+  const status = b.status || "ready";
+  if (status === "ready") return resumeBarHtml(b);
+  const total = b.n_chapters || 0, done = b.chapters_ready || 0;
+  const pct = total ? Math.min(100, Math.round((done / total) * 100)) : 0;
+  const label = status === "generating" ? `Generating · ${done}/${total} chapters`
+              : status === "partial"    ? `Incomplete · ${done}/${total} · tap to resume`
+              :                           `Stopped · ${done}/${total} · tap to resume`;
+  return `<div class="card-status ${escapeHtml(status)}">
+            <div class="card-status-label">${label}</div>
+            <div class="card-progress"><div class="card-progress-fill" style="width:${pct}%"></div></div>
+          </div>`;
 }
 
 // "Continue listening" hero: jump straight back into the most recently played, unfinished
@@ -1799,13 +1817,13 @@ async function pollJob(jobId) {
       $("#startIngest").disabled = false;
       return;
     }
-    // Open the book the moment the first chapter is listenable; the rest keep
-    // generating in the background and stream into the player automatically.
-    if (j.book_id && (ready >= 1 || j.status === "done")) {
-      const bid = j.book_id;
+    // The book is registered (skeleton manifest written) the moment it has an id — dismiss the
+    // dialog and drop back to the home page, where the new card shows live generation progress
+    // and streams chapters in as they finish. The user opens it when they're ready; we don't
+    // hijack them into the reader or make them sit on the upload dialog while it renders.
+    if (j.book_id) {
       closeModal();
-      await loadLibrary();
-      openBook(bid);
+      showLibrary();   // renders the new card + starts library polling so its progress updates live
       return;
     }
   } catch (err) {

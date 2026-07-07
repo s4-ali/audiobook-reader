@@ -234,6 +234,16 @@ code { background: var(--surface1); padding: 1px 6px; border-radius: var(--r-sm)
 .book-card .card-progress-fill { height: 100%; background: var(--accent); border-radius: var(--r-full); }
 .book-card .card-progress.done .card-progress-fill { background: var(--green); }
 
+/* Generation status strip (generating / partial / cancelled cards) */
+.book-card .card-status { margin-top: 12px; }
+.book-card .card-status-label {
+  font-size: 11px; color: var(--muted); margin-bottom: 5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.book-card .card-status .card-progress { margin-top: 0; }
+.book-card .card-status.partial .card-progress-fill,
+.book-card .card-status.cancelled .card-progress-fill { background: var(--yellow); }
+
 /* Reader layout */
 #readerView { display: flex; }
 #sidebar {
