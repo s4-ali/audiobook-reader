@@ -12,3 +12,6 @@ GeneratedPluginRegistrant.java
 key.properties
 **/*.keystore
 **/*.jks
+
+# Narrate: sherpa-onnx runtime, fetched by tool/fetch_narrate_deps.sh
+/app/libs/*.aar

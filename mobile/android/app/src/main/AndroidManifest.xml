@@ -18,6 +18,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
     <!-- Scan the desktop's pairing QR code (mobile_scanner). Camera is optional so the app
          still installs on camera-less devices — discovery/manual entry cover them. -->
+    <!-- Narrate: shows the pause/stop notification for selected-text narration (Android 13+). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-feature android:name="android.hardware.camera.any" android:required="false"/>
     <application
@@ -47,6 +49,37 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Narrate: speak text selected in ANY app with an on-device open TTS model. The
+             PROCESS_TEXT filter is what puts "Narrate" (this activity's label) in other apps'
+             text-selection toolbar; SEND text/plain adds it to the share sheet for apps whose
+             custom selection menu hides process-text actions. Activity + service share their own
+             process so the voice model's memory (and any native crash) stays out of the player. -->
+        <activity
+            android:name=".narrate.NarrateActivity"
+            android:label="Narrate"
+            android:exported="true"
+            android:process=":narrate"
+            android:theme="@style/NarrateTheme"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|screenLayout|uiMode">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="text/plain"/>
+            </intent-filter>
+        </activity>
+        <service
+            android:name=".narrate.NarrateService"
+            android:exported="false"
+            android:process=":narrate"
+            android:foregroundServiceType="mediaPlayback"/>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

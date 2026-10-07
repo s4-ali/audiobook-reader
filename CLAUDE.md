@@ -218,6 +218,31 @@ through the normal reader with a synthetic one-chapter manifest and `state.quick
 **`bookId = null`**, which is what keeps progress/notes/bookmarks off. Leaving the reader (or
 `pagehide`) calls `POST /api/quick/{key}/discard`. Web only; the whole text is synthesized before play.
 
+### Narrate selected text (Android, on-device) — `mobile/android/.../narrate/`
+Proof of concept: select text in **any** app → **Narrate** in the selection toolbar (or the share
+sheet) → it is spoken by an open TTS model running **on the phone**. Pure native Kotlin inside the
+Flutter app's Android module — no Dart, no desktop server, nothing leaves the device.
+`NarrateActivity` owns the `ACTION_PROCESS_TEXT` + `ACTION_SEND text/plain` intent filters (its
+`android:label` is the menu text) and draws a small translucent bottom panel; `NarrateService` is a
+`mediaPlayback` foreground service that splits the text into sentences (`splitForSpeech`), renders
+each with **sherpa-onnx** on a synth thread, and streams them through a bounded queue into an
+`AudioTrack`, so audio starts after the first sentence. Both run in the **`:narrate` process**
+(model memory / native crashes stay out of the player) and share state via the in-process
+`NarrateState`. Voices (`Voices.kt`) are unpacked sherpa-onnx model folders under
+`<external files>/tts/<name>/`, downloaded on demand from the upstream `tts-models` release — or
+`adb push`ed — never bundled in the APK.
+- **Kokoro is not the default on the phone**: measured on a Pixel 9 Pro it renders at ~1.2× real
+  time cool and ~0.6× once warm (audible pauses between sentences); Piper and Kitten run 3–8×.
+  `Voices.CATALOG` order is the default preference; the panel's **Voice** button switches/downloads.
+- **Build**: the sherpa-onnx AAR isn't on Maven Central — run `mobile/tool/fetch_narrate_deps.sh`
+  once (git-ignored `android/app/libs/`), or the Gradle build fails.
+- **R8 gotcha**: sherpa-onnx's JNI calls the synthesis callback by exact signature
+  (`invoke([F)Ljava/lang/Integer;`), which a Kotlin lambda doesn't have — it must be a real
+  `Function1` class, and `proguard-rules.pro` keeps it and `com.k2fsa.sherpa.onnx.**`.
+- **Debug hook**: `adb shell am start -n com.audiobook.audiobook_player/.narrate.NarrateActivity
+  -a android.intent.action.PROCESS_TEXT -t text/plain --es android.intent.extra.PROCESS_TEXT "…"
+  [--es model <folder>] [--ei threads N] [--ei sid N]`; timings log under the `Narrate` tag.
+
 ### Notes / annotations (`app/notes.py`) — a second sibling contract
 Per-book reading notes live in `library/books/<id>/notes.json` (`{book, version, notes[]}`),
 **never inside `manifest.json`** (ingest rewrites the manifest; notes must survive that).

@@ -48,6 +48,7 @@ Notes:
 ```bash
 cd mobile
 flutter pub get
+./tool/fetch_narrate_deps.sh       # once: on-device TTS runtime for "Narrate" (the build needs it)
 flutter analyze
 flutter test                       # unit tests (manifest parsing + highlight binary search)
 flutter run -d <android-device>    # or `flutter build apk`

@@ -39,10 +39,20 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            // R8 runs on release builds: keep the JNI-bound sherpa-onnx classes (see the rules file).
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 }
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Narrate (selected-text narration): on-device TTS runtime. The AAR is not on Maven Central —
+    // `tool/fetch_narrate_deps.sh` downloads it into libs/ (git-ignored).
+    implementation(files("libs/sherpa-onnx-1.13.8.aar"))
+    // Unpacks the voice-model tarball (.tar.bz2) downloaded on first use.
+    implementation("org.apache.commons:commons-compress:1.27.1")
 }
