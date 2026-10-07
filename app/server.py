@@ -1,6 +1,11 @@
 """FastAPI app: serves the player, the library API, audio, and ingest jobs."""
 from __future__ import annotations
 
+import hashlib
+import atexit
+import json
+import shutil
+import tempfile
 import threading
 import traceback
 import uuid
@@ -13,11 +18,17 @@ from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
-from . import config, library
+from . import audio as audiomod, config, library, pronounce
 from .extract import SUPPORTED_EXTS
-from .ingest import ingest_pdf, JobControl, _write_manifest_atomic
+from .ingest import ingest_pdf, JobControl, _write_manifest_atomic, Chapter, _render_chapter
 
 config.ensure_dirs()
+
+
+# "Listen to text" scratch space: pasted-text narrations live ONLY here (a fresh temp dir per
+# server run, wiped on exit) and are never written to the library or TTS cache.
+_QUICK_DIR = Path(tempfile.mkdtemp(prefix="abk-quick-"))
+atexit.register(shutil.rmtree, _QUICK_DIR, True)
 
 
 @asynccontextmanager
@@ -359,6 +370,192 @@ def api_cover(book_id: str):
     return Response(feed.cover_png(_manifest_or_404(book_id)), media_type="image/png")
 
 
+# --------------------------------------------------------------- notes narration (TTS)
+# A lightweight text->speech endpoint for the Obsidian note-narrator plugin: cleaned text in,
+# audio + per-sentence timings out (the same {i,t,s,e,cs,ce,p} shape as a chapter's
+# sentences[]). It reuses the ingest per-sentence render path via a one-off Chapter, so the
+# synth/silence/timing math is byte-identical to book generation — no book/chapter/manifest
+# machinery. Results are cached by a content hash under config.TTS_CACHE_DIR and the audio is
+# served (with HTTP Range, so seeking works) at /tts-media, so re-narrating an unchanged note
+# is instant.
+def _tts_key(text: str, engine: str, voice: str, lang: str, speed: float, fmt: str) -> str:
+    payload = "\x1f".join([text, engine, voice, lang, f"{float(speed):.3f}", fmt])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+# In-memory registry of running narration jobs, keyed by the content hash. Because the key is a
+# pure function of (text, engine, voice, …), re-POSTing the same note dedups onto the same job
+# instead of starting a second synthesis. Jobs are memory-only; the finished audio + timings are
+# durable on disk (TTS_CACHE_DIR), so after a restart the next POST either serves the disk cache
+# instantly (finished) or re-synthesizes (was mid-flight). Shape mirrors an ingest job's genstate:
+# {status, stage, done, total, message, result?} so the plugin renders a real progress bar.
+_tts_jobs: Dict[str, dict] = {}
+_tts_lock = threading.Lock()
+
+
+def _tts_disk_result(key: str) -> Optional[dict]:
+    """The finished narration for `key` if it's already cached on disk (audio + meta), else None."""
+    meta_path = config.TTS_CACHE_DIR / f"{key}.json"
+    if not meta_path.exists():
+        return None
+    try:
+        cached = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None  # corrupt/partial cache entry → treat as absent, re-synthesize
+    if cached.get("audio") and (config.TTS_CACHE_DIR / cached["audio"]).exists():
+        cached["cached"] = True
+        return cached
+    return None
+
+
+def _tts_done_state(key: str, result: dict) -> dict:
+    n = len(result.get("sentences", []))
+    return {"key": key, "status": "done", "stage": "done", "message": "Ready",
+            "done": n, "total": n, "cached": bool(result.get("cached")), "result": result}
+
+
+def _tts_run(key: str, text: str, engine: str, voice: str, lang: str,
+             speed: float, fmt: str, device: str, ephemeral: bool = False) -> None:
+    """Background synthesis worker: loads the engine, renders per sentence (bumping the job's
+    `done` counter through _render_chapter's on_sentence hook so the client sees live progress),
+    encodes, then caches the result to disk. Failures land on the job so the poller surfaces them."""
+    job = _tts_jobs[key]
+    try:
+        job["stage"] = "model"
+        job["message"] = "Loading the voice model…"
+        engine_obj = _get_engine(engine, voice, lang, speed, device)
+        sr = engine_obj.sample_rate
+        job["stage"] = "synth"
+        job["message"] = "Synthesizing narration…"
+        ch = Chapter(index=0, title="", level=1, text=text, start=0, end=len(text), page=0)
+
+        def on_sentence() -> None:
+            job["done"] += 1
+
+        pcm, timings, _topics = _render_chapter(
+            engine_obj, ch, sr, on_sentence=on_sentence, pron_rules=pronounce.load_rules())
+        job["stage"] = "encode"
+        job["message"] = "Encoding audio…"
+        out_dir, url_base = ((_QUICK_DIR, "/quick-media") if ephemeral
+                             else (config.TTS_CACHE_DIR, "/tts-media"))
+        out_path = audiomod.write_audio(pcm, out_dir / key, sr=sr, fmt=fmt)
+        result = {
+            "key": key, "audio": out_path.name, "audio_url": f"{url_base}/{out_path.name}",
+            "format": out_path.suffix.lstrip("."), "sample_rate": sr,
+            "duration": round(audiomod.duration_seconds(pcm, sr), 3),
+            "engine": engine, "voice": voice, "lang": lang, "speed": speed,
+            "sentences": timings, "cached": False,
+        }
+        if not ephemeral:                           # pasted text is never persisted
+            (config.TTS_CACHE_DIR / f"{key}.json").write_text(
+                json.dumps(result, ensure_ascii=False), encoding="utf-8")
+        job["done"] = len(timings)
+        job["total"] = len(timings)
+        job["result"] = result
+        job["stage"] = "done"
+        job["message"] = "Ready"
+        job["status"] = "done"
+    except Exception as e:                          # keep the failure visible to the poller
+        traceback.print_exc()
+        job["status"] = "error"
+        job["error"] = str(e)
+        job["message"] = f"Narration failed: {e}"
+
+
+@app.post("/api/tts")
+def api_tts(payload: dict = Body(...)):
+    """Start (or rejoin) a narration job for `text` and return its live status. The synthesis
+    runs on a background thread; the client polls GET /api/tts/{key} for progress (per-sentence
+    `done`/`total`) and the final `result`. Already-cached content returns done immediately."""
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Provide non-empty 'text' to narrate")
+    engine = (payload.get("engine") or config.DEFAULT_ENGINE).lower()
+    default_voice = config.VOXTRAL_VOICE if engine == "voxtral" else config.DEFAULT_VOICE
+    voice = payload.get("voice") or default_voice
+    lang = payload.get("lang") or config.DEFAULT_LANG
+    raw_speed = payload.get("speed")
+    speed = float(raw_speed if raw_speed is not None else config.DEFAULT_SPEED)
+    fmt = (payload.get("format") or config.AUDIO_FORMAT).lower()
+    device = payload.get("device") or config.KOKORO_DEVICE
+    key = payload.get("key") or _tts_key(text, engine, voice, lang, speed, fmt)
+    config.TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    cached = _tts_disk_result(key)
+    if cached is not None:                          # synthesized in a prior run → instant
+        return _tts_done_state(key, cached)
+
+    with _tts_lock:
+        job = _tts_jobs.get(key)
+        if job is None or job["status"] == "error":  # start fresh (or retry a failed one)
+            try:
+                from . import textproc
+                total = len(textproc.split_sentences(text))
+            except Exception:
+                total = 0
+            job = {"key": key, "status": "running", "stage": "model",
+                   "message": "Starting…", "done": 0, "total": total,
+                   "result": None, "error": None}
+            _tts_jobs[key] = job
+            threading.Thread(target=_tts_run,
+                             args=(key, text, engine, voice, lang, speed, fmt, device),
+                             daemon=True).start()
+    return job
+
+
+@app.post("/api/quick")
+def api_quick(payload: dict = Body(...)):
+    """Narrate pasted text without saving it: same synthesis as /api/tts, but audio goes to the
+    per-run temp dir, nothing is hash-cached on disk, and the key is random (no dedupe).
+    Poll GET /api/tts/{key}; discard with POST /api/quick/{key}/discard."""
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Paste some text to listen to")
+    engine = (payload.get("engine") or config.DEFAULT_ENGINE).lower()
+    default_voice = config.VOXTRAL_VOICE if engine == "voxtral" else config.DEFAULT_VOICE
+    voice = payload.get("voice") or default_voice
+    raw_speed = payload.get("speed")
+    speed = float(raw_speed if raw_speed is not None else config.DEFAULT_SPEED)
+    key = "q-" + uuid.uuid4().hex[:12]
+    try:
+        from . import textproc
+        total = len(textproc.split_sentences(text))
+    except Exception:
+        total = 0
+    job = {"key": key, "status": "running", "stage": "model", "message": "Starting…",
+           "done": 0, "total": total, "result": None, "error": None}
+    _tts_jobs[key] = job
+    threading.Thread(target=_tts_run,
+                     args=(key, text, engine, voice, config.DEFAULT_LANG, speed,
+                           config.AUDIO_FORMAT, config.KOKORO_DEVICE, True),
+                     daemon=True).start()
+    return job
+
+
+@app.post("/api/quick/{key}/discard")
+def api_quick_discard(key: str):
+    """Forget a pasted-text narration and delete its audio. POST (not DELETE) so the browser
+    can fire it from sendBeacon/keepalive on tab close."""
+    if not key.startswith("q-") or "/" in key or ".." in key:
+        raise HTTPException(400, "not a quick narration key")
+    _tts_jobs.pop(key, None)
+    for f in _QUICK_DIR.glob(f"{key}.*"):
+        f.unlink(missing_ok=True)
+    return {"ok": True}
+
+
+@app.get("/api/tts/{key}")
+def api_tts_status(key: str):
+    """Poll a narration job: {status, stage, done, total, message, result?}."""
+    job = _tts_jobs.get(key)
+    if job is not None:
+        return job
+    cached = _tts_disk_result(key)                  # finished in a previous server run
+    if cached is not None:
+        return _tts_done_state(key, cached)
+    raise HTTPException(404, "no such narration job")
+
+
 def _run_job(job_id: str, pdf_path: Path, opts: dict, resume: bool, control: JobControl):
     job = _jobs[job_id]
     try:
@@ -524,10 +721,14 @@ def _start_resume_job(book_id: str):
 
 # --------------------------------------------------------------- static mounts
 class _NoCacheStaticFiles(StaticFiles):
-    """Serve the UI assets with revalidation. There's no build step, so app.js/styles.css
-    change in place; ``Cache-Control: no-cache`` makes the browser revalidate (cheap 304 when
-    unchanged) instead of showing a stale copy after an edit. Audio under /media is unaffected
-    and keeps default caching for fast HTTP-Range seeking."""
+    """Serve static files with revalidation instead of heuristic caching. There's no build
+    step and files change *in place*: UI assets (app.js/styles.css) on every edit, chapter
+    MP3s on re-encode (scripts/reencode_cbr.py) or regeneration. Without a Cache-Control
+    header, browsers cache "heuristically" (~10% of the file's age — days, for an older
+    book) and reuse stale bytes without ever asking the server — for audio that silently
+    desyncs seeking from the fresh manifest timings, and not even a hard reload reliably
+    evicts media fetched later by a click. ``no-cache`` keeps the cached copy but
+    revalidates each use (a cheap local 304 via ETag); HTTP-Range seeking is unaffected."""
 
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
@@ -535,7 +736,12 @@ class _NoCacheStaticFiles(StaticFiles):
         return response
 
 
-# Audio + manifests (StaticFiles supports HTTP Range, so seeking works).
-app.mount("/media", StaticFiles(directory=str(config.BOOKS_DIR)), name="media")
+# Audio + manifests (StaticFiles supports HTTP Range, so seeking works; no-cache so a
+# re-encoded/regenerated chapter MP3 is never played from a stale browser cache).
+app.mount("/media", _NoCacheStaticFiles(directory=str(config.BOOKS_DIR)), name="media")
+# Cached notes-narration audio for the /api/tts endpoint (also Range-capable → seeking).
+app.mount("/tts-media", _NoCacheStaticFiles(directory=str(config.TTS_CACHE_DIR)), name="tts-media")
+# Throwaway pasted-text audio (see _QUICK_DIR) — never in the library.
+app.mount("/quick-media", _NoCacheStaticFiles(directory=str(_QUICK_DIR)), name="quick-media")
 # Frontend (index.html at "/") — no-cache so UI edits show up on a normal reload.
 app.mount("/", _NoCacheStaticFiles(directory=str(config.WEB_DIR), html=True), name="web")

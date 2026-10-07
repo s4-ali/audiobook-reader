@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# The one command to start the app:  ./run
+#
+# Wraps scripts/run.sh with the defaults you'd otherwise have to remember:
+#   • binds 0.0.0.0 so the phone app finds this Mac over Wi-Fi (mDNS + QR need it)
+#   • sets up .venv on a first run instead of failing with a cryptic error
+#   • opens the player in your browser once the server answers
+# Overrides:  PORT=8001 ./run    HOST=127.0.0.1 ./run (local only)    OPEN=0 ./run
+set -euo pipefail
+cd "$(dirname "$0")"
+
+HOST="${HOST:-0.0.0.0}"
+PORT="${PORT:-8000}"
+URL="http://127.0.0.1:$PORT"
+
+# First run: install base deps. The heavy Kokoro/PyTorch download stays opt-in.
+if [[ ! -x .venv/bin/python ]]; then
+  echo "==> No .venv yet — running first-time setup (base deps only)"
+  ./scripts/setup.sh
+  echo
+  echo "NOTE: for real narration also run:  ./scripts/setup.sh --tts"
+  echo
+fi
+
+# Port taken? If it's already this app, just open it; anything else is a real conflict.
+if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  if curl -fs -o /dev/null --max-time 2 "$URL/api/server-info" 2>/dev/null; then
+    echo "==> Already running at $URL"
+    if [[ "${OPEN:-1}" == 1 ]] && command -v open >/dev/null 2>&1; then open "$URL"; fi
+    exit 0
+  fi
+  echo "ERROR: port $PORT is in use by something else:"
+  lsof -nP -iTCP:"$PORT" -sTCP:LISTEN | tail -n +2 || true   # || true: pipefail must not eat the hint below
+  echo "Stop it, or pick another port:  PORT=8001 ./run"
+  exit 1
+fi
+
+# Open the browser once the server is actually answering (never blocks startup).
+if [[ "${OPEN:-1}" == 1 ]] && command -v open >/dev/null 2>&1; then
+  (
+    for _ in $(seq 1 60); do
+      # quiet: the first few probes fail by design, while uvicorn is still binding
+      if curl -fs -o /dev/null --max-time 1 "$URL/" 2>/dev/null; then open "$URL"; break; fi
+      sleep 0.5
+    done
+  ) &
+fi
+
+export HOST PORT
+exec ./scripts/run.sh "$@"

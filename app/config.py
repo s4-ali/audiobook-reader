@@ -21,6 +21,10 @@ LIBRARY_DIR = Path(os.environ.get("AUDIOBOOK_LIBRARY", ROOT / "library")).resolv
 INBOX_DIR = LIBRARY_DIR / "inbox"      # drop PDFs here
 BOOKS_DIR = LIBRARY_DIR / "books"      # generated audiobooks live here
 WEB_DIR = ROOT / "web"                 # static frontend
+# Cache for the notes-narration endpoint (POST /api/tts): synthesized audio + per-sentence
+# timings keyed by a content hash, so re-narrating an unchanged note is instant. Served at
+# /tts-media. Powers the Obsidian note-narrator plugin.
+TTS_CACHE_DIR = Path(os.environ.get("TTS_CACHE_DIR", LIBRARY_DIR / ".cache" / "tts")).resolve()
 
 # --- TTS defaults ------------------------------------------------------------
 DEFAULT_ENGINE = os.environ.get("TTS_ENGINE", "kokoro")  # "kokoro" | "voxtral" | "dummy"
@@ -56,6 +60,10 @@ AUDIO_FORMAT = os.environ.get("AUDIO_FORMAT", "mp3")     # "mp3" | "wav"
 MP3_BITRATE = os.environ.get("MP3_BITRATE", "64k")       # libmp3lame -b:a (CBR)
 SENTENCE_GAP_MS = int(os.environ.get("SENTENCE_GAP_MS", "90"))
 PARAGRAPH_GAP_MS = int(os.environ.get("PARAGRAPH_GAP_MS", "320"))
+# Sentence starts in the manifest are settled back into the pause that precedes them —
+# half the pause, capped at this — so seeks/highlight flips happen in silence instead of
+# exactly on speech onset (see ingest._settle_boundaries for why zero margin is fragile).
+SENTENCE_LEAD_MS = int(os.environ.get("SENTENCE_LEAD_MS", "250"))
 
 # --- Pronunciation dictionary ------------------------------------------------
 # Optional JSON map of spoken-form replacements applied just before TTS (audio only;
@@ -89,5 +97,5 @@ STRUCTURE_CACHE_DIR = Path(os.environ.get(
 
 
 def ensure_dirs() -> None:
-    for d in (INBOX_DIR, BOOKS_DIR):
+    for d in (INBOX_DIR, BOOKS_DIR, TTS_CACHE_DIR):
         d.mkdir(parents=True, exist_ok=True)

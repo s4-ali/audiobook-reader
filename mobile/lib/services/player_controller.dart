@@ -138,8 +138,19 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
   }
 
+  // Last full UI notify from a position tick — highlight flips notify immediately, other
+  // ticks are throttled back to the old 200 ms cadence so rebuild cost doesn't grow.
+  DateTime _lastTickNotify = DateTime.fromMillisecondsSinceEpoch(0);
+
   void _wire() {
-    _subs.add(_player.positionStream.listen((pos) {
+    // Karaoke-rate position ticks: the default positionStream clamps to one update per
+    // 200 ms on long chapters, which flips the sentence highlight visibly late — the
+    // same lag the web player had on `timeupdate` before its requestAnimationFrame loop.
+    _subs.add(_player
+        .createPositionStream(
+            minPeriod: const Duration(milliseconds: 33),
+            maxPeriod: const Duration(milliseconds: 50))
+        .listen((pos) {
       _position = pos;
       final prevSi = _activeSentence;
       _recomputeActive();
@@ -154,7 +165,12 @@ class PlayerController extends ChangeNotifier {
             si: _activeSentence,
             frac: _progressFraction());
       }
-      notifyListeners();
+      final now = DateTime.now();
+      if (_activeSentence != prevSi ||
+          now.difference(_lastTickNotify).inMilliseconds >= 200) {
+        _lastTickNotify = now;
+        notifyListeners();
+      }
     }));
     _subs.add(_player.currentIndexStream.listen((srcIdx) {
       if (srcIdx == null || srcIdx >= _sourceToChapter.length) return;
@@ -309,12 +325,19 @@ class PlayerController extends ChangeNotifier {
   }
 
   /// Jump to a chapter (by `book.chapters` position) at an optional in-chapter offset and
-  /// start playing — used by the outline, search results, and sentence taps.
-  Future<void> goTo(int chapterPos, {double atSeconds = 0, bool startPlaying = true}) async {
+  /// start playing — used by the outline, search results, and sentence taps. A sentence
+  /// tap passes [sentenceIndex]: the sentence — not a timestamp — is the user's intent,
+  /// so highlight it immediately instead of waiting for a position tick to re-derive it.
+  Future<void> goTo(int chapterPos,
+      {double atSeconds = 0, bool startPlaying = true, int sentenceIndex = -1}) async {
     _exitFollow();
     final si = _sourceToChapter.indexOf(chapterPos);
     if (si < 0) return;
     await _player.seek(Duration(milliseconds: (atSeconds * 1000).round()), index: si);
+    if (sentenceIndex >= 0) {
+      _activeSentence = sentenceIndex;
+      notifyListeners();
+    }
     if (startPlaying && !_playing) await _player.play();
   }
 

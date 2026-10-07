@@ -103,6 +103,42 @@ class Chapter {
       );
 }
 
+/// Mirror of the desktop's `ingest.settle_manifest`: manifests written before
+/// `timing_version` 2 put each sentence's `s` exactly on speech onset, which makes
+/// tap-to-seek fragile — a frame-quantized seek can land a hair early and play the tail
+/// of the previous sentence. Pull each start halfway into the preceding pause, capped
+/// like the desktop's `config.SENTENCE_LEAD_MS` (250 ms), and remap topic times that
+/// point at a sentence start. Runs on the decoded JSON, so books installed before this
+/// upgrade are fixed at load; their on-disk manifest.json is left untouched.
+const int _timingVersion = 2;
+const double _leadCapSeconds = 0.25;
+
+void _settleLegacyTimings(Map<String, dynamic> j) {
+  final tv = j['timing_version'] == null ? 1 : _toInt(j['timing_version']);
+  if (tv >= _timingVersion) return;
+  for (final ch in (j['chapters'] ?? const []) as List) {
+    final sents = (ch['sentences'] ?? const []) as List;
+    final remap = <double, double>{};
+    var prevEnd = 0.0;
+    for (final tm in sents) {
+      final s = _toDouble(tm['s']);
+      final pause = s > prevEnd ? s - prevEnd : 0.0;
+      prevEnd = _toDouble(tm['e']);
+      final lead = pause / 2 < _leadCapSeconds ? pause / 2 : _leadCapSeconds;
+      tm['s'] = s - lead;
+      remap[s] = s - lead;
+    }
+    for (final tp in (ch['topics'] ?? const []) as List) {
+      final t = tp['time'];
+      if (t != null) {
+        final mapped = remap[_toDouble(t)];
+        if (mapped != null) tp['time'] = mapped;
+      }
+    }
+  }
+  j['timing_version'] = _timingVersion; // idempotence: settling twice erodes the margin
+}
+
 class Book {
   final String id;
   final String title;
@@ -131,6 +167,7 @@ class Book {
   });
 
   factory Book.fromJson(Map<String, dynamic> j) {
+    _settleLegacyTimings(j);
     final chapters = ((j['chapters'] ?? const []) as List)
         .map((c) => Chapter.fromJson(c as Map<String, dynamic>))
         .toList();

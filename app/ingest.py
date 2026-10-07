@@ -199,16 +199,73 @@ def _time_at_char(timings: List[dict], char_off: int) -> float:
     return best
 
 
+# Bump when the meaning of the manifest's sentence timings changes; settle_manifest uses
+# it to upgrade legacy manifests exactly once (settling is not idempotent — a second pass
+# would keep eroding the boundary's leading margin).
+TIMING_VERSION = 2
+
+
+def _settle_boundaries(timings: List[dict]) -> None:
+    """Pull each sentence's start ``s`` back into the pause that precedes it.
+
+    Raw starts sit exactly on the first spoken sample (per-sentence path) or on the
+    forced aligner's first-word onset (Voxtral continuous path) — zero leading margin.
+    Players seek MP3 with frame granularity (~24 ms at 24 kHz, landing at-or-before the
+    target) and the aligner itself is ~20 ms-quantized, so a seek to a zero-margin start
+    can land a hair early and play the tail of the previous sentence — worst on Voxtral
+    audio, where speech is continuous across sentences. Splitting the inter-sentence
+    pause (half of it, capped at SENTENCE_LEAD_MS) gives every boundary silence on both
+    sides: seeks land in silence and the karaoke highlight flips between words. ``e``
+    stays on the last spoken sample.
+    """
+    lead_cap = config.SENTENCE_LEAD_MS / 1000.0
+    prev_end = 0.0
+    for tm in timings:
+        pause = max(0.0, tm["s"] - prev_end)
+        prev_end = tm["e"]
+        tm["s"] = round(tm["s"] - min(pause / 2.0, lead_cap), 3)
+
+
+def settle_manifest(manifest: dict) -> bool:
+    """Upgrade an already-written manifest to settled sentence boundaries, in place.
+
+    Legacy manifests (timing_version < 2) carry raw speech-onset starts; this applies
+    the same _settle_boundaries transform new ingests use — manifest-only, the audio is
+    untouched. Topic times equal the start of the sentence they fall in, so they are
+    remapped alongside. Returns True if the manifest changed.
+    """
+    if manifest.get("timing_version", 1) >= TIMING_VERSION:
+        return False
+    for chd in manifest.get("chapters", []):
+        sents = chd.get("sentences") or []
+        old_starts = [tm["s"] for tm in sents]
+        _settle_boundaries(sents)
+        remap = {old: tm["s"] for old, tm in zip(old_starts, sents)}
+        for tp in chd.get("topics") or []:
+            if tp.get("time") in remap:
+                tp["time"] = remap[tp["time"]]
+    manifest["timing_version"] = TIMING_VERSION
+    return True
+
+
 def _render_chapter(engine, ch: Chapter, sr: int,
                     on_sentence: Optional[Callable[[], None]] = None,
                     control: Optional[JobControl] = None,
                     pron_rules: Optional[list] = None):
     """Dispatch. Voxtral renders whole paragraphs continuously (natural cross-sentence
     prosody) and recovers per-sentence timings via forced alignment; every other engine
-    keeps the per-sentence path, where timings come from each sentence's own duration."""
+    keeps the per-sentence path, where timings come from each sentence's own duration.
+    Either way the raw starts are then settled into the preceding pause, and topics get
+    their time from the settled sentence they fall in."""
     if getattr(engine, "name", "") == "voxtral" and config.VOXTRAL_ALIGN and align.available():
-        return _render_chapter_aligned(engine, ch, sr, on_sentence, control, pron_rules)
-    return _render_chapter_per_sentence(engine, ch, sr, on_sentence, control, pron_rules)
+        pcm, timings = _render_chapter_aligned(engine, ch, sr, on_sentence, control, pron_rules)
+    else:
+        pcm, timings = _render_chapter_per_sentence(engine, ch, sr, on_sentence, control, pron_rules)
+    _settle_boundaries(timings)
+    topics = [{"title": m.title, "level": m.level,
+               "time": round(_time_at_char(timings, m.offset - ch.start), 3)}
+              for m in ch.submarkers]
+    return pcm, timings, topics
 
 
 def _chunk_sentences(sents, ch_text: str, budget: int) -> List[List[int]]:
@@ -285,14 +342,7 @@ def _render_chapter_aligned(engine, ch: Chapter, sr: int,
         parts.append(audiomod.silence(gap_ms, sr))
         t += chunk_dur + gap_ms / 1000.0
 
-    pcm = audiomod.concat(parts)
-    topics = []
-    for m in ch.submarkers:
-        topics.append({
-            "title": m.title, "level": m.level,
-            "time": round(_time_at_char(timings, m.offset - ch.start), 3),
-        })
-    return pcm, timings, topics
+    return audiomod.concat(parts), timings
 
 
 def _render_chapter_per_sentence(engine, ch: Chapter, sr: int,
@@ -328,14 +378,7 @@ def _render_chapter_per_sentence(engine, ch: Chapter, sr: int,
         if on_sentence:
             on_sentence()
 
-    pcm = audiomod.concat(parts)
-    topics = []
-    for m in ch.submarkers:
-        topics.append({
-            "title": m.title, "level": m.level,
-            "time": round(_time_at_char(timings, m.offset - ch.start), 3),
-        })
-    return pcm, timings, topics
+    return audiomod.concat(parts), timings
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +413,7 @@ def _skeleton(book_id, doc, chapters, eng_info, fmt, sr, voice, lang, speed) -> 
         "device": eng_info.get("device", ""),
         "sample_rate": sr, "audio_format": fmt, "toc_source": doc.toc_source,
         "structure_source": doc.structure_source,
-        "n_pages": doc.n_pages,
+        "n_pages": doc.n_pages, "timing_version": TIMING_VERSION,
         "status": "generating", "chapters_total": len(chapters), "chapters_ready": 0,
         "total_duration": 0.0,
         "chapters": [{
@@ -458,6 +501,9 @@ def ingest_pdf(pdf_path: str | Path, *, engine_name: str = None, voice: str = No
     if existing:
         manifest = existing
         manifest["status"] = "generating"
+        # A resumed legacy book keeps its ready chapters; upgrade their raw speech-onset
+        # starts to settled boundaries so old and new chapters share one timing contract.
+        settle_manifest(manifest)
     else:
         manifest = _skeleton(book_id, doc, chapters, eng_info, fmt, sr, voice, lang, speed)
     manifest["source_pdf"] = pdf_path.name

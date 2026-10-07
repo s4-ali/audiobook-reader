@@ -14,6 +14,31 @@ notes sync (see "Cloud sync & progress" below); the FastAPI server stays local e
 
 ## Commands
 
+### Running the app — `./run`
+
+```bash
+./run          # that's it — this is the whole command
+```
+
+Starts the player + API and opens http://127.0.0.1:8000 in the browser. Add books from the
+web UI itself (**+ Add a book** → pick file, model, voice) — no CLI needed for normal use.
+Stop it with Ctrl-C.
+
+`./run` is a thin wrapper over `scripts/run.sh` that applies the defaults you'd otherwise have
+to remember and type: it **binds `0.0.0.0`** (so the phone app's mDNS discovery + QR pairing
+work — the single most-forgotten flag), runs `scripts/setup.sh` if `.venv` is missing, opens
+the browser once the server actually answers, and detects an already-running instance (opens
+it instead of failing on a port clash). Overrides, all optional:
+
+```bash
+PORT=8001 ./run        # different port
+HOST=127.0.0.1 ./run   # local only — phone can NOT reach it
+OPEN=0 ./run           # don't open a browser
+./scripts/run.sh       # the raw server (defaults to 127.0.0.1, no browser, no setup check)
+```
+
+### Everything else
+
 The Python interpreter is the project venv: `.venv/bin/python`. The `scripts/*.sh` wrappers
 `cd` to the repo root so `app` is importable; to invoke modules directly use
 `PYTHONPATH=. .venv/bin/python -m app.<module>`.
@@ -21,7 +46,6 @@ The Python interpreter is the project venv: `.venv/bin/python`. The `scripts/*.s
 ```bash
 ./scripts/setup.sh --tts          # create .venv (uv, Python 3.13) + install base + Kokoro/torch
 brew install ffmpeg espeak-ng     # ffmpeg = MP3 output; espeak-ng = pronunciation fallback
-./scripts/run.sh                  # serve player+API at http://127.0.0.1:8000 (env: HOST, PORT)
 ./scripts/ingest.sh <file.pdf|epub> [--voice af_heart --speed 1.0 --resume]
 ./scripts/ingest.sh               # ingest every PDF/EPUB in library/inbox/
 ./scripts/ingest.sh x.pdf --engine dummy   # fast pipeline test, no model download
@@ -152,6 +176,11 @@ voice lists + install availability — powers the **Model** picker in the *Add a
 `/api/books/{id}/genstate` (what the player polls — returns counts + `active`/`paused` so the
 full manifest is only re-fetched when a chapter finishes). Audio + manifests are served via
 `StaticFiles` at `/media` (supports HTTP Range → seeking); the web UI is mounted at `/`.
+**Every static mount serves `Cache-Control: no-cache`** (`_NoCacheStaticFiles`) — media too,
+not just UI assets: chapter MP3s change in place (`reencode_cbr.py`, regeneration), and
+without the header browsers heuristically cache them for days and keep playing stale bytes
+(seeks land seconds off while the manifest is fresh). The player also versions audio URLs
+(`?v=<timing_version>`) so entries cached before this header existed can't resurface.
 
 ### Phone pairing (`app/netinfo.py`) — mDNS auto-discovery + QR, no more typing IPs
 So the mobile app doesn't need the Mac's IP hand-typed, the server makes itself findable two
@@ -164,18 +193,30 @@ the web player's **📱 Connect your phone** button. `GET /api/server-info` repo
 dependency) and `friendly_name()`. **Gotcha**: the server only knows its own bind host/port
 because `scripts/run.sh` **`export`s `HOST`/`PORT`** and `config.py` reads them back
 (`BIND_HOST`/`PORT`); mDNS only advertises — and the QR panel only stops warning — when
-`lan_reachable` (bound to `0.0.0.0`, i.e. `HOST=0.0.0.0`). `run.sh` prints the network URL at
+`lan_reachable` (bound to `0.0.0.0`, i.e. `HOST=0.0.0.0` — which is why `./run` defaults to it;
+bare `scripts/run.sh` stays on `127.0.0.1` and the phone can't see it). `run.sh` prints the network URL at
 startup via `python -m app.netinfo`. Mobile side: `services/discovery.dart` (`nsd`, prefers the
 resolved IPv4) + `screens/scan_screen.dart` (`mobile_scanner`, needs `CAMERA`) feed
 `browse_screen.dart`; both new plugins and the QR/mDNS deps are additive.
 
 ### Player (`web/`, no build step)
 Vanilla JS served statically. Loads the manifest, renders sentences as clickable spans, and
-syncs the active sentence to playback via the `<audio>` `timeupdate` event + binary search on
-sentence start times. Search is client-side (indexes manifest sentences); the resume point lives
+syncs the active sentence to playback by binary search on sentence start times — driven by a
+`requestAnimationFrame` loop while playing (`timeupdate` alone fires only every ~250 ms, a
+visible karaoke lag) and by `timeupdate` when paused; a sentence click sets the highlight
+directly (`seekToSentence`) rather than waiting for it to be re-derived from `currentTime`. Search is client-side (indexes manifest sentences); the resume point lives
 only in Firestore (+ its offline cache) — no `localStorage` progress — and doubles as the realtime
 cross-device follow source (see "Cloud sync & progress"). During generation it polls `genstate`; the generation
 banner doubles as the pause/resume/cancel control surface.
+
+### Listen to text (pasted, never saved)
+The library's **Listen to text** button narrates pasted text (a blog, an article) with no book
+created. `POST /api/quick` reuses the `/api/tts` worker (`_tts_run(..., ephemeral=True)`) but writes
+audio only to `server._QUICK_DIR` (a per-run temp dir, served at `/quick-media`, wiped at exit),
+skips the hash cache, and uses a random `q-…` key; poll `GET /api/tts/{key}`. The web player opens it
+through the normal reader with a synthetic one-chapter manifest and `state.quick` (audio URL) and
+**`bookId = null`**, which is what keeps progress/notes/bookmarks off. Leaving the reader (or
+`pagehide`) calls `POST /api/quick/{key}/discard`. Web only; the whole text is synthesized before play.
 
 ### Notes / annotations (`app/notes.py`) — a second sibling contract
 Per-book reading notes live in `library/books/<id>/notes.json` (`{book, version, notes[]}`),
@@ -314,15 +355,30 @@ words (seek), so a tap on the gaps toggles the controls.
   karaoke highlight and sends click-to-seek to the wrong sentence. Re-encoding VBR→CBR is
   content-preserving (identical duration + sample timeline), so `scripts/reencode_cbr.py` fixes
   legacy books in place without re-running TTS.
-- MP3 encoding adds a fixed ~50 ms leading delay vs. the raw-PCM-derived timings — a constant
-  offset, negligible for sentence-level highlighting; don't try to "fix" it per chapter.
+- **MP3 encoder delay is a non-issue in real players — don't compensate for it.** ffmpeg writes
+  the Xing/LAME gapless tag (delay ≈ 1105 samples / 46 ms at 24 kHz) and every target player
+  (browser `<audio>`, ExoPlayer/just_audio) honors it, so the decoded timeline matches the
+  manifest's raw-PCM timings sample-exactly (measured: clicks encoded through
+  `audio.write_audio` decode back at +0.04 ms). Only tag-ignorant decoders see the ~46 ms shift.
+- **Sentence `s` boundaries are settled into the preceding pause, never placed on speech onset.**
+  `ingest._settle_boundaries` pulls each raw start back by half the inter-sentence pause (capped
+  at `config.SENTENCE_LEAD_MS`); `e` stays on the last spoken sample. Zero-margin starts were the
+  click-plays-previous-sentence bug: players seek MP3 frame-quantized (~24 ms, landing at or
+  before the target) and Voxtral's forced-aligned onsets are themselves ~20 ms-quantized, and
+  Voxtral speech is continuous so there's no gap to absorb the error. Manifests carry
+  `timing_version: 2`; `scripts/retime_boundaries.py` upgrades legacy books in place
+  (manifest-only, idempotent via the version stamp — settling twice would erode the margin),
+  `--resume` upgrades automatically, and the mobile app applies the same transform at manifest
+  load (`_settleLegacyTimings` in `mobile/lib/models/manifest.dart`) so already-installed books
+  are covered. Keep raw onsets out of `s` in any new timing code.
 - **Mobile (`mobile/`) Android gotchas**: `MainActivity` must extend `AudioServiceActivity`
   (just_audio_background needs it for the shared FlutterEngine) **and** override
   `configureFlutterEngine` to register the `getStorageInfo` `MethodChannel` (call `super` first);
   `minSdk >= 23`, and cleartext HTTP must be enabled (LAN server is `http://`). Persistent book
   storage needs **All files access** — the app opens the system grant screen from the library
   banner; without it the library silently uses the app-internal fallback (books lost on uninstall). The phone reaches the desktop over Wi-Fi, so
-  serve with `HOST=0.0.0.0`; from an Android emulator the host is `10.0.2.2`. Only
+  serve with `HOST=0.0.0.0` (`./run` already does; bare `scripts/run.sh` does not) — from an
+  Android emulator the host is `10.0.2.2`. Only
   `status == "ready"` books are packageable. The on-device integration test
   (`mobile/integration_test/app_test.dart`) needs a running server (override its URL with
   `--dart-define=SERVER_URL=...`).

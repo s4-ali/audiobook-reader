@@ -49,6 +49,7 @@ const state = {
   localUpdated: 0,        // ms timestamp of our last local savePos (to dedupe remote echoes)
   unsubProgress: null,    // Firestore progress listener teardown for the open book
   unsubNotes: null,       // Firestore notes listener teardown for the open book
+  quick: null,            // {key,url} while listening to pasted text (never saved; see openQuick)
   readingMode: false,     // full-screen distraction-free reading
   following: false,       // mirroring another device's live playback (cross-device auto-follow)
   followTimer: null,      // stale timer: drop out of follow if the other device stops updating
@@ -197,6 +198,7 @@ function showLibrary() {
   audio.pause();      // 'pause' handler would otherwise run after bookId is nulled)
   teardownBookSync();
   if (state.readingMode) exitReadingMode();
+  discardQuick();
   state.bookId = null; state.manifest = null; state.waitingForNext = null; state.genstate = null;
   state.notes = []; hideNotePopover(); $("#notesPanel").hidden = true;
   $("#libraryView").hidden = false;
@@ -421,7 +423,11 @@ function loadChapter(ci, seekTime = 0, autoplay = false) {
   state.sentences = ch.sentences || [];
   state.activeSi = -1;
 
-  audio.src = `/media/${state.bookId}/${ch.audio}`;
+  // ?v= gives these requests a fresh cache key: entries cached before /media sent
+  // Cache-Control (heuristically "fresh" for days) would otherwise keep serving stale
+  // audio after a re-encode. Going forward, no-cache + ETag revalidation keep it fresh.
+  audio.src = state.quick ? state.quick.url
+    : `/media/${state.bookId}/${ch.audio}?v=${state.manifest.timing_version || 1}`;
   audio.load();
   pendingSeek = seekTime; pendingPlay = autoplay;
 
@@ -449,7 +455,7 @@ function renderChapterText(ch) {
     span.textContent = sent.t + " ";
     span.addEventListener("click", () => {
       if (!window.getSelection().isCollapsed) return;  // a drag-select just happened — don't seek
-      seekTo(sent.s, true);
+      seekToSentence(sent.i, true);
     });
     p.appendChild(span);
     state.spanEls[sent.i] = span;
@@ -495,14 +501,26 @@ function scrollIntoViewIfNeeded(el) {
   }
 }
 
-let saveTick = 0;
-audio.addEventListener("timeupdate", () => {
+function syncToPlayback() {
   const t = audio.currentTime;
   if (!state.isScrubbing) {
     $("#seekBar").value = t;
     $("#curTime").textContent = fmtTime(t);
   }
   setActiveSentence(findActiveIndex(t));
+}
+
+// While playing, the karaoke highlight runs off requestAnimationFrame: browsers fire
+// `timeupdate` only every ~250 ms, which makes every sentence flip visibly late.
+let syncRaf = 0;
+function syncLoop() {
+  syncToPlayback();
+  syncRaf = requestAnimationFrame(syncLoop);
+}
+
+let saveTick = 0;
+audio.addEventListener("timeupdate", () => {
+  if (!syncRaf) syncToPlayback();  // paused seeks/restores; when playing the rAF loop owns it
   if (++saveTick % 12 === 0) { savePos(); updateMediaPosition(); }
 });
 
@@ -517,8 +535,16 @@ audio.addEventListener("loadedmetadata", () => {
   pendingSeek = 0; pendingPlay = false;
 });
 
-audio.addEventListener("play", () => { $("#playBtn").innerHTML = icon("pause"); });
-audio.addEventListener("pause", () => { $("#playBtn").innerHTML = icon("play"); savePos(); window.abkSync?.flushProgress?.(); });
+audio.addEventListener("play", () => {
+  $("#playBtn").innerHTML = icon("pause");
+  if (!syncRaf) syncRaf = requestAnimationFrame(syncLoop);
+});
+audio.addEventListener("pause", () => {
+  $("#playBtn").innerHTML = icon("play");
+  cancelAnimationFrame(syncRaf);
+  syncRaf = 0;
+  savePos(); window.abkSync?.flushProgress?.();
+});
 audio.addEventListener("ended", () => {
   savePos();
   if (sleepTimer.endOfChapter) {
@@ -545,6 +571,15 @@ function seekTo(t, play = false) {
   } else {
     pendingSeek = t; pendingPlay = play;
   }
+}
+
+// Seek to a sentence by index. The sentence — not a timestamp — is the user's intent,
+// so highlight it immediately instead of waiting for playback to re-derive it.
+function seekToSentence(si, play = false) {
+  const sent = state.sentences[si];
+  if (!sent) return;
+  seekTo(sent.s, play);
+  setActiveSentence(si);
 }
 
 /* --------------------------------------------------------------- transport */
@@ -920,7 +955,7 @@ function showNotePopover(anchor) {
 function hideNotePopover() { const p = $("#notePopover"); if (p) p.hidden = true; popoverAnchor = null; }
 
 function refreshSelectionPopover() {
-  if ($("#readerView").hidden || !$("#noteEditor").hidden) return;
+  if ($("#readerView").hidden || !$("#noteEditor").hidden || !state.bookId) return;
   const anchor = selectionToAnchor();
   if (anchor) showNotePopover(anchor); else hideNotePopover();
 }
@@ -1570,7 +1605,7 @@ document.addEventListener("click", (e) => {
 // seconds and reappears on any pointer/scroll activity. `f` toggles, `Esc` exits.
 let readingHideTimer = null;
 function enterReadingMode() {
-  if (state.readingMode || !state.bookId || $("#readerView").hidden) return;
+  if (state.readingMode || !(state.bookId || state.quick) || $("#readerView").hidden) return;
   state.readingMode = true;
   $("#app").classList.add("reading");
   $("#readingControls").hidden = false;
@@ -1677,6 +1712,7 @@ document.addEventListener("keydown", (e) => {
     if (!$("#shortcutsModal").hidden) { closeShortcuts(); return; }
     if (!$("#accountModal").hidden) { closeAccountModal(); return; }
     if (!$("#pairModal").hidden) { closePairModal(); return; }
+    if (!$("#quickModal").hidden) { closeQuickModal(); return; }
     if ($("#modal").hidden === false) closeModal();
     else if (state.readingMode) exitReadingMode();
     else if ($("#searchInput").value) clearSearch();
@@ -1702,7 +1738,7 @@ document.addEventListener("keydown", (e) => {
 function jumpSentence(dir) {
   const cur = state.activeSi < 0 ? findActiveIndex(audio.currentTime) : state.activeSi;
   const ni = cur + dir;
-  if (ni >= 0 && ni < state.sentences.length) seekTo(state.sentences[ni].s, true);
+  if (ni >= 0 && ni < state.sentences.length) seekToSentence(ni, true);
 }
 
 /* ----------------------------------------------------------- add-book modal */
@@ -1773,6 +1809,107 @@ function closeModal() {
 }
 $("#addBookBtn").addEventListener("click", openModal);
 $("#cancelModal").addEventListener("click", closeModal);
+
+/* ------------------------------------------------------- listen to text */
+// Paste text → narrate → play in the normal reader, with nothing persisted: the server keeps
+// the audio in a per-run temp dir (POST /api/quick), there is no bookId (so progress, notes and
+// bookmarks stay off), and leaving the reader discards the audio.
+function discardQuick() {
+  const q = state.quick;
+  if (!q) return;
+  state.quick = null;
+  fetch(`/api/quick/${q.key}/discard`, { method: "POST", keepalive: true }).catch(() => {});
+}
+window.addEventListener("pagehide", discardQuick);
+
+async function openQuickModal() {
+  if (!voicesData) { try { voicesData = await api("/api/voices"); } catch {} }
+  const sel = $("#quickEngine");
+  if (!sel.options.length) {
+    const engines = voicesData?.engines || [{ id: "kokoro", label: "Kokoro-82M", available: true }];
+    sel.innerHTML = engines.map((e) => `<option value="${e.id}" ${e.available ? "" : "disabled"}>${escapeHtml(e.label)}</option>`).join("");
+    const ok = (id) => engines.some((e) => e.id === id && e.available);
+    sel.value = ok(voicesData?.default_engine) ? voicesData.default_engine : (engines.find((e) => e.available)?.id || sel.value);
+  }
+  fillQuickVoices(sel.value);
+  $("#quickModal").hidden = false;
+  $("#quickText").focus();
+}
+function fillQuickVoices(engineId) {
+  const eng = (voicesData?.engines || []).find((e) => e.id === engineId);
+  const voices = eng?.voices || [];
+  const sel = $("#quickVoice");
+  sel.disabled = !voices.length;
+  sel.innerHTML = voices.length
+    ? voices.map((v) => `<option value="${v.id}" ${v.id === eng.default_voice ? "selected" : ""}>${escapeHtml(v.label)}</option>`).join("")
+    : `<option value="${escapeHtml(eng?.default_voice || "af_heart")}">—</option>`;
+}
+function closeQuickModal() {
+  $("#quickModal").hidden = true;
+  $("#quickProgress").hidden = true;
+  $("#quickBar").style.width = "0";
+  $("#quickGo").disabled = false;
+}
+$("#quickBtn").addEventListener("click", openQuickModal);
+$("#quickCancel").addEventListener("click", closeQuickModal);
+$("#quickEngine").addEventListener("change", (e) => fillQuickVoices(e.target.value));
+
+$("#quickForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = $("#quickText").value.trim();
+  if (!text) return;
+  $("#quickGo").disabled = true;
+  $("#quickProgress").hidden = false;
+  $("#quickMsg").textContent = "Starting…";
+  try {
+    let job = await api("/api/quick", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, engine: $("#quickEngine").value, voice: $("#quickVoice").value,
+                             speed: Number($("#quickSpeed").value) }) });
+    while (job.status === "running") {
+      const pct = job.total ? Math.round((job.done / job.total) * 100) : 0;
+      $("#quickBar").style.width = pct + "%";
+      $("#quickMsg").textContent = job.total && job.stage === "synth"
+        ? `${job.message} ${job.done}/${job.total} sentences` : job.message;
+      await new Promise((r) => setTimeout(r, 700));
+      job = await api(`/api/tts/${job.key}`);
+    }
+    if (job.status !== "done") throw new Error(job.error || job.message || "failed");
+    $("#quickText").value = "";
+    closeQuickModal();
+    openQuick(job.result, text);
+  } catch (err) {
+    $("#quickMsg").textContent = "Failed: " + err.message;
+    $("#quickGo").disabled = false;
+  }
+});
+
+function openQuick(result, text) {
+  stopLibraryPolling();
+  discardQuick();
+  const firstLine = text.split("\n").find((l) => l.trim()) || "Pasted text";
+  const title = firstLine.trim().length > 60 ? firstLine.trim().slice(0, 57) + "…" : firstLine.trim();
+  const sentences = result.sentences || [];
+  state.quick = { key: result.key, url: result.audio_url };
+  state.bookId = null;
+  state.manifest = {
+    title, author: "Pasted text", voice: result.voice, status: "ready",
+    total_duration: result.duration,
+    chapters: [{ title, status: "ready", duration: result.duration, sentences, topics: [] }],
+  };
+  state.waitingForNext = null; state.pendingInitial = false; state.genstate = null; state.notes = [];
+  $("#libraryView").hidden = true;
+  $("#readerView").hidden = false;
+  $("#player").hidden = false;
+  $("#backBtn").hidden = false;
+  $("#notesPanel").hidden = true;
+  updateBookMeta();
+  buildSearchIndex();
+  renderOutline();
+  renderBookmarks();
+  clearSearch();
+  updateGenBanner();
+  loadChapter(0, 0, true);
+}
 
 /* ---------------------------------------------------------- shortcuts help */
 function openShortcuts() { $("#shortcutsModal").hidden = false; }

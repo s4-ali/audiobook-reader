@@ -39,7 +39,10 @@
   <section id="libraryView" class="view">
     <div class="library-head">
       <h1>Your Library</h1>
-      <button id="addBookBtn" class="primary text-icon"><span data-icon="plus"></span> Add a book</button>
+      <div class="library-actions">
+        <button id="quickBtn" class="ghost text-icon" title="Paste text and listen — nothing is saved"><span data-icon="volume"></span> Listen to text</button>
+        <button id="addBookBtn" class="primary text-icon"><span data-icon="plus"></span> Add a book</button>
+      </div>
     </div>
     <div id="continueSection" class="continue-section" hidden></div>
     <div id="bookGrid" class="book-grid"></div>
@@ -180,6 +183,39 @@
     </form>
     <p class="hint" id="ingestHint">Generates locally, chapter by chapter — you can start
       listening as soon as the first chapter is ready while the rest finish in the background.</p>
+  </div>
+</div>
+
+<!-- LISTEN TO TEXT (pasted, never saved) -->
+<div id="quickModal" class="modal" hidden>
+  <div class="modal-card">
+    <h2>Listen to text</h2>
+    <form id="quickForm">
+      <label class="field">Paste an article, blog post, anything
+        <textarea id="quickText" class="quick-text" rows="10" required
+                  placeholder="Paste text here…"></textarea>
+      </label>
+      <div class="row">
+        <label class="field">Model <select id="quickEngine"></select></label>
+        <label class="field">Voice <select id="quickVoice"></select></label>
+        <label class="field">Speed
+          <select id="quickSpeed">
+            <option value="0.9">0.9×</option>
+            <option value="1" selected>1×</option>
+            <option value="1.1">1.1×</option>
+          </select>
+        </label>
+      </div>
+      <div id="quickProgress" class="ingest-progress" hidden>
+        <div class="bar"><div id="quickBar" class="bar-fill"></div></div>
+        <div id="quickMsg" class="ingest-msg"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="quickCancel" class="ghost">Cancel</button>
+        <button type="submit" id="quickGo" class="primary">Listen</button>
+      </div>
+    </form>
+    <p class="hint">Narrated locally and discarded when you leave — nothing is added to your library.</p>
   </div>
 </div>
 

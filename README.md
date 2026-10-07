@@ -55,9 +55,13 @@ progress & notes across devices via your own Firebase project — see
 brew install ffmpeg espeak-ng
 
 # 3. Start the player
-./scripts/run.sh
-# open http://127.0.0.1:8000
+./run
+# opens http://127.0.0.1:8000 in your browser
 ```
+
+`./run` is the only command you need day to day: it starts the player + API, makes the
+server visible to your phone on the same Wi-Fi, and opens the browser. `PORT=8001 ./run`,
+`HOST=127.0.0.1 ./run` (local only) and `OPEN=0 ./run` override the defaults.
 
 Then click **“+ Add a book”**, pick a file, a **model** (Kokoro, Voxtral, or the
 silent test engine) and a voice, and press **Generate audiobook**. The first run
@@ -145,7 +149,7 @@ Finished books can be played **offline** in the companion **Flutter app**
 `manifest.json` + the chapter MP3s — and gets onto the phone two ways:
 
 - **Download over Wi-Fi** — start the server so your phone can reach it
-  (`HOST=0.0.0.0 ./scripts/run.sh`) and open the app's **Connect** screen. With both
+  (`./run` — it binds `0.0.0.0` for exactly this) and open the app's **Connect** screen. With both
   on the same Wi-Fi you don't need any IP address: this computer **appears in the list
   automatically** (mDNS) — just tap it. Can't see it? Click **📱 Connect your phone** in
   the web player's top bar and **scan the QR code**, or type the address by hand as before
@@ -307,5 +311,6 @@ web/            no-build vanilla JS player (index.html, app.js, styles.css)
 mobile/         Flutter app (Android) — plays packaged .abk books offline
 library/inbox/  drop PDFs here
 library/books/  generated audiobooks
+run             one-command launcher (wraps scripts/run.sh with LAN + browser defaults)
 scripts/        setup.sh, run.sh, ingest.sh, export.sh
 ```

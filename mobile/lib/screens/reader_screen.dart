@@ -123,7 +123,7 @@ class _ReaderScreenState extends State<ReaderScreen> with WidgetsBindingObserver
     for (final s in ch.sentences) {
       current.add(s);
       _recognizers[s.i] = TapGestureRecognizer()
-        ..onTap = () => _c.goTo(chapterPos, atSeconds: s.s);
+        ..onTap = () => _c.goTo(chapterPos, atSeconds: s.s, sentenceIndex: s.i);
       if (s.paragraph) {
         _paras.add(current);
         current = [];
